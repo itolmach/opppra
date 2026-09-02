@@ -92,3 +92,7 @@ iOSInjectionProject/
 # macOS
 .DS_Store
 
+# Local secrets (Supabase project URL/anon key) -- copy Config.xcconfig.example
+# to Config.xcconfig and fill in your own values, see SUPABASE_SETUP.md
+OperaApp/Config/Config.xcconfig
+

@@ -30,6 +30,9 @@
 		AA0021 /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0021 /* ProfileView.swift */; };
 		AA0022 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0022 /* SettingsView.swift */; };
 		AA0023 /* AddToListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0023 /* AddToListView.swift */; };
+		AA0024 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0025 /* AppConfig.swift */; };
+		AA0025 /* SupabaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0026 /* SupabaseManager.swift */; };
+		AA0026 /* OCRService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0027 /* OCRService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -57,6 +60,11 @@
 		BB0022 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BB0023 /* AddToListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddToListView.swift; sourceTree = "<group>"; };
 		BB0024 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB0025 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		BB0026 /* SupabaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseManager.swift; sourceTree = "<group>"; };
+		BB0027 /* OCRService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRService.swift; sourceTree = "<group>"; };
+		BB0028 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		BB0029 /* Config.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig.example; sourceTree = "<group>"; };
 		DD0001 /* OperaApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OperaApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -88,6 +96,7 @@
 				CC0005 /* Models */,
 				CC0006 /* Services */,
 				CC0007 /* Views */,
+				CC0020 /* Config */,
 				BB0003 /* Assets.xcassets */,
 				BB0024 /* Info.plist */,
 			);
@@ -126,6 +135,8 @@
 			children = (
 				BB0009 /* AuthenticationService.swift */,
 				BB0010 /* APIService.swift */,
+				BB0026 /* SupabaseManager.swift */,
+				BB0027 /* OCRService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -246,6 +257,16 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
+		CC0020 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				BB0025 /* AppConfig.swift */,
+				BB0028 /* Config.xcconfig */,
+				BB0029 /* Config.xcconfig.example */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -337,6 +358,9 @@
 				AA0021 /* ProfileView.swift in Sources */,
 				AA0022 /* SettingsView.swift in Sources */,
 				AA0023 /* AddToListView.swift in Sources */,
+				AA0024 /* AppConfig.swift in Sources */,
+				AA0025 /* SupabaseManager.swift in Sources */,
+				AA0026 /* OCRService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -465,6 +489,7 @@
 		};
 		HH0003 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = BB0028 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -499,6 +524,7 @@
 		};
 		HH0004 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = BB0028 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;

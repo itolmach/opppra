@@ -59,7 +59,9 @@ struct LogFlowView: View {
                             onSave: {
                                 Task {
                                     await viewModel.saveLog()
-                                    dismiss()
+                                    if viewModel.saveError == nil {
+                                        dismiss()
+                                    }
                                 }
                             }
                         )
@@ -144,16 +146,17 @@ struct TicketScanningView: View {
     @ObservedObject var viewModel: LogFlowViewModel
     @State private var selectedImage: PhotosPickerItem?
     @State private var isProcessing = false
+    @State private var errorMessage: String?
     let onComplete: () -> Void
-    
+
     var body: some View {
         VStack(spacing: 24) {
             if isProcessing {
                 VStack(spacing: 16) {
                     ProgressView()
                         .tint(.white)
-                    
-                    Text("Processing ticket...")
+
+                    Text("Reading your ticket...")
                         .foregroundColor(.white)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -163,34 +166,46 @@ struct TicketScanningView: View {
                         Image(systemName: "camera.viewfinder")
                             .font(.system(size: 80))
                             .foregroundColor(.white)
-                        
+
                         Text("Tap to scan ticket or playbill")
                             .font(.headline)
                             .foregroundColor(.white)
-                        
+
                         Text("We'll extract the details automatically")
                             .font(.subheadline)
                             .foregroundColor(.white.opacity(0.7))
+
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .onChange(of: selectedImage) { newValue in
-                    if newValue != nil {
-                        processTicket()
-                    }
+                    guard let newValue else { return }
+                    processTicket(newValue)
                 }
             }
         }
     }
-    
-    private func processTicket() {
+
+    private func processTicket(_ item: PhotosPickerItem) {
         isProcessing = true
-        
+        errorMessage = nil
+
         Task {
-            // Simulate OCR processing
-            await viewModel.processTicketScan()
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    throw OCRError.invalidImage
+                }
+                await viewModel.processTicketScan(imageData: data)
+                onComplete()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
             isProcessing = false
-            onComplete()
         }
     }
 }
@@ -218,7 +233,17 @@ struct ManualEntryView: View {
                         TextField("Search for opera...", text: $viewModel.operaTitle)
                             .textFieldStyle(OperaTextFieldStyle())
                     }
-                    
+
+                    // Composer
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Composer")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.7))
+
+                        TextField("Composer", text: $viewModel.composer)
+                            .textFieldStyle(OperaTextFieldStyle())
+                    }
+
                     // Date picker
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Date")
@@ -249,11 +274,21 @@ struct ManualEntryView: View {
                         TextField("City", text: $viewModel.city)
                             .textFieldStyle(OperaTextFieldStyle())
                     }
+
+                    // Country
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Country")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.7))
+
+                        TextField("Country", text: $viewModel.country)
+                            .textFieldStyle(OperaTextFieldStyle())
+                    }
                 }
                 .padding(.horizontal)
-                
+
                 Spacer(minLength: 40)
-                
+
                 Button(action: onNext) {
                     Text("Next")
                         .font(.headline)
@@ -341,8 +376,15 @@ struct RatingAndNotesView: View {
                 }
                 .padding(.horizontal)
                 
+                if let saveError = viewModel.saveError {
+                    Text(saveError)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .padding(.horizontal)
+                }
+
                 Spacer(minLength: 40)
-                
+
                 Button(action: onSave) {
                     if viewModel.isSaving {
                         ProgressView()
@@ -479,49 +521,68 @@ struct FlowLayout: Layout {
 @MainActor
 class LogFlowViewModel: ObservableObject {
     @Published var operaTitle = ""
+    @Published var composer = ""
     @Published var attendanceDate = Date()
     @Published var venueName = ""
     @Published var city = ""
-    
+    @Published var country = ""
+
     @Published var overallRating: Double = 0
     @Published var musicRating: Double = 0
     @Published var performanceRating: Double = 0
     @Published var productionRating: Double = 0
-    
+
     @Published var notes = ""
     @Published var tags: [String] = []
-    
+
     @Published var isSaving = false
-    
+    @Published var saveError: String?
+
+    private var ticketImagePath: String?
+    private var ticketData: TicketData?
+
     var isBasicInfoValid: Bool {
         !operaTitle.isEmpty && !venueName.isEmpty && !city.isEmpty
     }
-    
-    func processTicketScan() async {
-        // Simulate OCR processing
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        
-        // Mock extracted data
-        operaTitle = "La Bohème"
-        venueName = "Metropolitan Opera House"
-        city = "New York"
-        attendanceDate = Date()
+
+    func processTicketScan(imageData: Data) async {
+        do {
+            let extracted = try await OCRService.scanTicket(imageData: imageData)
+            ticketData = extracted
+
+            if let venue = extracted.extractedVenue { venueName = venue }
+            if let date = extracted.extractedDate { attendanceDate = date }
+
+            ticketImagePath = try? await APIService.shared.uploadTicketPhoto(imageData: imageData)
+        } catch {
+            saveError = error.localizedDescription
+        }
     }
-    
+
     func saveLog() async {
+        guard let userId = AuthenticationService.shared.currentUser?.id else {
+            saveError = "You need to be signed in to save a log."
+            return
+        }
+
         isSaving = true
-        
+        saveError = nil
+
+        // No catalog opera is linked in this free-text flow, so derive a
+        // stable id from the title the user typed/OCR extracted.
+        let operaId = "manual-\(operaTitle.lowercased().replacingOccurrences(of: " ", with: "-"))"
+
         let log = AttendanceLog(
             id: UUID().uuidString,
-            userId: "user-1",
-            operaId: "opera-1",
+            userId: userId,
+            operaId: operaId,
             operaTitle: operaTitle,
-            composer: "Puccini", // TODO: Get from search
+            composer: composer.isEmpty ? "Unknown" : composer,
             productionId: nil,
             venueId: nil,
             venueName: venueName,
             city: city,
-            country: "USA", // TODO: Get from location
+            country: country.isEmpty ? "Unknown" : country,
             attendanceDate: attendanceDate,
             performanceTime: nil,
             overallRating: overallRating > 0 ? overallRating : nil,
@@ -531,19 +592,18 @@ class LogFlowViewModel: ObservableObject {
             notes: notes.isEmpty ? nil : notes,
             tags: tags,
             photos: [],
-            ticketImageURL: nil,
-            ticketData: nil,
+            ticketImageURL: ticketImagePath,
+            ticketData: ticketData,
             createdAt: Date(),
             updatedAt: Date()
         )
-        
+
         do {
             _ = try await APIService.shared.createAttendanceLog(log)
-            // Success - haptic feedback
         } catch {
-            print("Error saving log: \(error)")
+            saveError = error.localizedDescription
         }
-        
+
         isSaving = false
     }
 }

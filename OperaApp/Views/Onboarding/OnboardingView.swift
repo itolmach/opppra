@@ -162,19 +162,19 @@ struct OnboardingView: View {
                     try await authService.signIn(email: email, password: password)
                 }
             } catch {
-                errorMessage = "Authentication failed. Please try again."
+                errorMessage = error.localizedDescription
             }
             isLoading = false
         }
     }
-    
+
     private func handleAppleSignIn() {
         isLoading = true
         Task {
             do {
                 try await authService.signInWithApple()
             } catch {
-                errorMessage = "Apple sign in failed. Please try again."
+                errorMessage = error.localizedDescription
             }
             isLoading = false
         }

@@ -114,39 +114,39 @@ open OperaApp.xcodeproj
 
 ### Configuration
 
-#### API Endpoint
+#### Backend
 
-The app currently uses mock data. To connect to a real backend:
+The backend is [Supabase](https://supabase.com) (Postgres + Auth + Storage)
+-- see **[SUPABASE_SETUP.md](./SUPABASE_SETUP.md)** for how to stand up the
+project, run the migrations in `supabase/`, and configure this app to point
+at it via `OperaApp/Config/Config.xcconfig`. The opera/composer catalog
+itself still comes live from the public OpenOpus API, same as before.
 
-1. Open `OperaApp/Services/APIService.swift`
-2. Update the `baseURL` constant with your API endpoint:
-```swift
-private let baseURL = "https://your-api-endpoint.com/v1"
-```
+This is the same Supabase project used by the
+[opera-companion](https://github.com/itolmach/opera-companion) web app --
+one account, one dataset across iOS and web.
 
 #### Authentication
 
-The app includes basic authentication scaffolding. To implement Sign in with Apple:
-
-1. Enable Sign in with Apple in your Apple Developer account
-2. Add the capability in Xcode: Target → Signing & Capabilities → + Sign in with Apple
-3. Implement the Apple authentication in `AuthenticationService.swift`
+Auth is real: email/password and Sign in with Apple, both via Supabase
+Auth (`AuthenticationService.swift`). Sign in with Apple additionally needs
+the capability added in Xcode: Target → Signing & Capabilities → + Sign in
+with Apple.
 
 ## Features Roadmap
 
 ### Current (MVP)
 
-- ✅ User authentication
-- ✅ Opera search and discovery
-- ✅ Personal lists management
-- ✅ Attendance logging
-- ✅ Basic recommendations
+- ✅ User authentication (Supabase Auth: email/password, Sign in with Apple)
+- ✅ Opera search and discovery (live OpenOpus catalog)
+- ✅ Personal lists management (Supabase Postgres, real CRUD)
+- ✅ Attendance logging (Supabase Postgres, real CRUD)
+- ✅ On-device OCR ticket scanning (Vision framework)
+- ✅ Rules-based recommendations from your taste profile
 - ✅ Profile management
 
 ### Next Steps
 
-- [ ] Real backend API integration
-- [ ] OCR implementation for ticket scanning
 - [ ] Social features (follow users, share logs)
 - [ ] Advanced filtering and sorting
 - [ ] Offline mode with local caching
@@ -156,6 +156,8 @@ The app includes basic authentication scaffolding. To implement Sign in with App
 - [ ] In-app ticket purchasing
 - [ ] Audio/video previews of operas
 - [ ] Advanced analytics (your opera journey over time)
+- [ ] An admin flow for entering verified production/performance data (see
+      the warning in `supabase/seed.sql`)
 
 ## Design Principles
 
@@ -177,49 +179,13 @@ The app includes basic authentication scaffolding. To implement Sign in with App
 - Smart defaults and autocomplete
 - Offline-capable core features
 
-## API Integration Guide
+## Backend
 
-### Expected Backend Endpoints
-
-```
-Authentication:
-POST   /auth/signup
-POST   /auth/signin
-POST   /auth/signout
-GET    /auth/profile
-
-Operas:
-GET    /operas
-GET    /operas/:id
-GET    /operas/:id/productions
-GET    /operas/search?q=
-
-Productions:
-GET    /productions
-GET    /productions/:id
-GET    /productions/upcoming
-
-Lists:
-GET    /lists
-POST   /lists
-PUT    /lists/:id
-DELETE /lists/:id
-POST   /lists/:id/items
-DELETE /lists/:id/items/:itemId
-
-Logs:
-GET    /logs
-POST   /logs
-PUT    /logs/:id
-DELETE /logs/:id
-
-Recommendations:
-GET    /recommendations
-POST   /recommendations/:id/feedback
-
-OCR:
-POST   /ocr/ticket (multipart/form-data)
-```
+There's no custom REST API -- the app talks to Supabase directly via the
+`supabase-swift` SDK (Postgres + Auth + Storage, with Row Level Security
+doing the authorization that a hand-written API would otherwise need to
+enforce), plus the public OpenOpus API for the opera/composer catalog. See
+**[SUPABASE_SETUP.md](./SUPABASE_SETUP.md)** for the schema and setup.
 
 ## Contributing
 
@@ -235,5 +201,8 @@ For questions or feedback, please open an issue in the repository.
 
 ---
 
-**Note**: This app is currently in development. Mock data is used throughout. A production backend API is required for full functionality.
+**Note**: The backend is real (Supabase), but production-hardening steps still
+need a human with an Apple Developer account and a Supabase project: see
+**[SUPABASE_SETUP.md](./SUPABASE_SETUP.md)** for what's left, and the
+production-readiness summary in the PR/commit description for a fuller list.
 

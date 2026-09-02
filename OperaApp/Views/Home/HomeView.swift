@@ -346,36 +346,42 @@ class HomeViewModel: ObservableObject {
     
     func loadData() async {
         isLoading = true
-        
-        async let stats = loadSeasonStats()
+
         async let recommendations = APIService.shared.fetchUpcomingProductions(limit: 5)
         async let logs = APIService.shared.fetchAttendanceLogs()
         async let lists = APIService.shared.fetchUserLists()
-        
+
         do {
-            seasonStats = try await stats
             upcomingRecommendations = try await recommendations
             recentLogs = try await logs
-            
+
             let allLists = try await lists
             if let wishlist = allLists.first(where: { $0.type == .wantsToExperience }) {
                 wishlistPreview = wishlist.items
             }
+
+            seasonStats = computeSeasonStats(from: recentLogs, wishlistCount: wishlistPreview.count)
         } catch {
             print("Error loading home data: \(error)")
         }
-        
+
         isLoading = false
     }
-    
+
     func refresh() async {
         await loadData()
     }
-    
-    private func loadSeasonStats() async throws -> SeasonStats {
-        // TODO: Implement actual API call
-        try await Task.sleep(nanoseconds: 500_000_000)
-        return SeasonStats(attendedThisSeason: 5, upcomingPlanned: 3, newWorks: 2)
+
+    private func computeSeasonStats(from logs: [AttendanceLog], wishlistCount: Int) -> SeasonStats {
+        let calendar = Calendar.current
+        let seasonStart = calendar.date(byAdding: .year, value: -1, to: Date()) ?? .distantPast
+        let thisSeason = logs.filter { $0.attendanceDate >= seasonStart }
+
+        return SeasonStats(
+            attendedThisSeason: thisSeason.count,
+            upcomingPlanned: wishlistCount,
+            newWorks: Set(thisSeason.map { $0.operaTitle }).count
+        )
     }
 }
 

@@ -75,7 +75,7 @@ struct AddToListView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Save") {
                         Task {
-                            await viewModel.save(operaId: opera.id)
+                            await viewModel.save(opera: opera)
                             dismiss()
                         }
                     }
@@ -183,10 +183,14 @@ class AddToListViewModel: ObservableObject {
         }
     }
     
-    func save(operaId: String) async {
+    func save(opera: Opera) async {
         for listId in selectedLists {
             do {
-                try await APIService.shared.addToList(listId: listId, operaId: operaId)
+                try await APIService.shared.addToList(
+                    listId: listId,
+                    opera: opera,
+                    notes: notes.isEmpty ? nil : notes
+                )
             } catch {
                 print("Error adding to list: \(error)")
             }
