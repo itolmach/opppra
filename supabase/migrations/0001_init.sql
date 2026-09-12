@@ -230,7 +230,9 @@ create table if not exists public.attendance_logs (
   -- on the log entry); the iOS app doesn't read/write these but tolerates
   -- their presence -- Swift's JSONDecoder ignores keys a struct doesn't
   -- declare, so this doesn't require any iOS-side change.
-  cast jsonb not null default '[]'::jsonb,
+  -- Not "cast": that is a reserved word in Postgres and would need quoting
+  -- at every use site forever.
+  cast_list jsonb not null default '[]'::jsonb,
   comments jsonb not null default '[]'::jsonb,
   ticket_image_url text,
   ticket_scanned_text text,
