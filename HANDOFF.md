@@ -100,13 +100,42 @@ must carry the **same `opera_id`** in both or a title saved on the phone never
 shows up on the web.
 
 ```
-opera_id = "<composerId>-<workId>"     e.g. Nixon in China -> "149-16890"
+opera_id = the MusicBrainz work MBID     e.g. Khovanshchina -> 14ea1c96-ed3c-46fd-9bef-a025698dbd55
 ```
 
-Both values come from OpenOpus. iOS already builds this in
-`APIService.swift`; the web app was deriving `<composerId>-<title-slug>`
-instead, because the endpoint it read (`work/dump.json`) carries no work ids —
-fixed by reading `work/list/composer/<id>/genre/Stage` instead.
+**This changed on 2026-09-14 and the iOS app has not caught up.** It still
+builds `"\(composer.id)-\(work.id)"` from OpenOpus in `APIService.swift`,
+which no longer matches anything the web app writes.
 
-If you ever change how either side keys a work, change both, and migrate the
-existing rows.
+### Why the source changed
+
+OpenOpus has no opera type. It files everything staged under genre `Stage` and
+leaves `subtitle` empty on about 40% of works, so film scores and incidental
+music were indistinguishable from real operas, and the catalogue could only be
+cleaned with a denylist that was never going to be complete.
+
+MusicBrainz types operas explicitly and its API filters on that type: 3,359
+works, no guessing. Wikidata supplies the translated titles on top, joined
+exactly on the MusicBrainz work id (Wikidata property P435) rather than by
+name. The web catalogue is now 2,537 operas, 552 of them with Russian titles.
+
+### What the iOS app has to change
+
+1. **Fetch from MusicBrainz, not OpenOpus.**
+   `https://musicbrainz.org/ws/2/work?query=type:opera&limit=100&offset=N&fmt=json`
+   Their rules: one request per second, and a real contact address in the
+   `User-Agent`. Going faster gets you throttled and then blocked.
+2. **Use `work.id` (the MBID) as `opera_id`** — nothing derived, nothing
+   concatenated.
+3. **Drop excerpts.** MusicBrainz types arias and acts as operas too. The web
+   app's two filters are in `scripts/fetch-and-process-data.mjs`
+   (`findExcerpts`) and should be mirrored rather than reinvented.
+4. **Composer comes from the `composer` relation**, not a field.
+5. Expect **non-Latin titles and composer names** — Хованщина is stored in
+   Cyrillic, and its composer as `Модест Петрович Мусоргский`. Any search must
+   transliterate rather than assume Latin; see `src/lib/search.ts`.
+
+The simplest correct option is for iOS to read the same generated
+`all_operas.json` the web app publishes, rather than querying MusicBrainz
+itself. That guarantees the two catalogues agree by construction, which is the
+whole point of the shared id.
