@@ -12,16 +12,19 @@ Two apps, one Supabase project, one account and one dataset across both.
 | Web app (old home) | `itolmach/opera-companion` — history only, superseded |
 
 The web app moved into the private workspace repo for code privacy and to keep
-everything in one place. It publishes as a gated preview branch:
+everything in one place. It publishes at:
 
 ```
 https://itolmach.github.io/TolmachevFamily/opera/
 ```
 
-The password is recorded in `PASSWORDS.md` on TolmachevFamily's `main`.
+The password overlay was removed on 2026-09-16 — the site is public, and it is
+installable on an iPhone Home Screen (manifest plus Apple touch icons), which
+a gate would have broken.
 
-> The gate is a client-side SHA-256 overlay — it stops the link being casually
-> readable, it is not security. The repo is private; the published site is not.
+> The repo is private; the published site is not. Nothing shipped in the
+> bundle is a secret: the Supabase anon key is designed to be public and RLS
+> is the real boundary.
 
 ## Supabase
 
@@ -33,7 +36,7 @@ The password is recorded in `PASSWORDS.md` on TolmachevFamily's `main`.
 
 URL: `https://ypblzqaltozesxxgcyha.supabase.co`
 
-**Schema is applied and verified**: 9 tables, RLS enabled on every one, storage
+**Schema is applied and verified**: RLS enabled on every table, storage
 buckets with owner-only policies, and the signup trigger that creates a profile
 plus the two default lists. `handle_new_user()` had its public EXECUTE grant
 revoked — as a SECURITY DEFINER function it was exposed over RPC to anonymous
@@ -84,14 +87,48 @@ and every work was keyed `undefined-<title>` with 11 duplicate ids.
    still unproven is clicking a real emailed link. Supabase's built-in SMTP is
    also rate-limited to a handful of messages an hour — fine for you, not for
    real users. Point it at a real sender before anyone else signs up.
-3. **Catalogue scope.** The 1,257 works include 37 film scores, 28 musicals
-   and 490 stage works the source doesn't classify further. Say the word and
-   they come out; the filter is one list at the top of
-   `scripts/fetch-and-process-data.mjs`.
+3. **Re-seed our own catalogue tables.** `opera_works` and friends hold the
+   older, smaller catalogue. `scripts/seed-catalogue.mjs` re-imports the
+   current one but needs `SUPABASE_SERVICE_ROLE_KEY`.
+4. **Playbill coverage.** Three houses are readable (Mariinsky, Mikhailovsky,
+   Novaya Opera). The Bolshoi answers an unattended request with 401 and
+   Astana Opera renders its schedule in the browser; both need a headless
+   browser, or a hand-maintained feed.
+5. **Nothing refreshes the playbill on a schedule.** `npm run refresh-playbill`
+   is run by hand. It wants `SUPABASE_SERVICE_ROLE_KEY`, which is why it is
+   not in the deploy workflow — that key must never be in a client build.
+   A scheduled GitHub Action with the key as a repo secret is the next step.
 
 Then the iOS app: its `OperaApp/Config/Config.xcconfig` needs the same project
 URL and anon key, the `supabase-swift` package added in Xcode, and the Sign in
 with Apple capability enabled.
+
+## Opera houses and the playbill
+
+Added 2026-09-20 (`supabase/migrations/0004_opera_houses.sql`). This is the
+half of "our own database" that 0003 does not cover: 0003 holds the works,
+this holds where and when they are performed.
+
+| Table | What it is |
+| --- | --- |
+| `opera_houses` | the houses, keyed by `slug` (`mariinsky`, `bolshoi`, …) |
+| `playbill_entries` | one row per performance; public read, no client write |
+| `user_saved_houses` | the houses a person wants to visit; owner-only |
+
+`playbill_entries.opera_id` is the **same MusicBrainz work id** as
+`attendance_logs.opera_id` — deliberately not a foreign key to `opera_works`,
+because a house can announce a premiere no catalogue holds yet and that
+performance still belongs on the bill.
+
+The web app surfaces this at `/afisha` (the houses) and
+`/afisha/theatre?slug=…` (one house's next twelve months). Those two pages are
+**in Russian and styled on mariinsky.ru** — ivory grounds, a parchment band,
+hairline bronze rules, PT Serif over PT Sans — because they are what a Russian
+house would be shown. The rest of the app stays in English; the two surfaces
+do not need to agree, and a German one would be a third.
+
+Entries come from `scripts/fetch-playbill.mjs` in the web repo, which reads
+each house's own site and keeps only what the house itself files as opera.
 
 ## The one contract between the two apps
 
