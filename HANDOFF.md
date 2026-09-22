@@ -129,6 +129,14 @@ do not need to agree, and a German one would be a third.
 
 Entries come from `scripts/fetch-playbill.mjs` in the web repo, which reads
 each house's own site and keeps only what the house itself files as opera.
+As of 2026-09-20: **115 performances, 109 linked to a catalogue work**, from
+the Mariinsky (through October), the Mikhailovsky (through December) and
+Novaya Opera (through March 2027). Each house publishes as far ahead as it
+publishes; the twelve months is a ceiling, not a promise.
+
+`opera_houses.timezone` is what playbill times are shown in. It is a fact
+about the house, not the reader: formatted in the viewer's zone instead, the
+Mariinsky's 19:00 performances read 16:00 from anywhere west of Moscow.
 
 ## The one contract between the two apps
 
@@ -151,10 +159,17 @@ leaves `subtitle` empty on about 40% of works, so film scores and incidental
 music were indistinguishable from real operas, and the catalogue could only be
 cleaned with a denylist that was never going to be complete.
 
-MusicBrainz types operas explicitly and its API filters on that type: 3,359
-works, no guessing. Wikidata supplies the translated titles on top, joined
-exactly on the MusicBrainz work id (Wikidata property P435) rather than by
-name. The web catalogue is now 2,537 operas, 552 of them with Russian titles.
+MusicBrainz types operas explicitly and its API filters on that type, so
+there is no genre guessing. Wikidata supplies the translated titles on top,
+joined exactly on the MusicBrainz work id (Wikidata property P435) rather than
+by name. The web catalogue is now **2,490 operas, 545 with Russian titles**.
+
+One trap, because iOS will hit it too: the broad `type:opera` search pages by
+relevance, relevance ties shift between requests, and paging through it drops
+about a quarter of each composer's works without any error. The web pipeline
+now uses that search only to enumerate composers and then queries each
+composer separately. Read from the broad search alone, the catalogue was
+missing Pagliacci, Dido and Aeneas, Siegfried and Пиковая дама.
 
 ### What the iOS app has to change
 
