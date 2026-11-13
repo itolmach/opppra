@@ -27,9 +27,26 @@ create table if not exists public.opera_houses (
   -- useful rather than apologetic.
   playbill_url text,
   image_url text,
+  -- What time a performance starts is a fact about the house, not about
+  -- whoever is reading the bill. Formatted in the viewer's zone instead, the
+  -- Mariinsky's 19:00 performances read 16:00 from anywhere west of Moscow,
+  -- and a late one lands on the wrong day and under the wrong month heading.
+  timezone text not null default 'Europe/Moscow',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- For databases created before the column existed. It was added to the
+-- project directly and lived only there for a while, which is how the Neon
+-- port came up one column short: the repo, not the running database, has to
+-- be the thing the schema is rebuilt from.
+alter table public.opera_houses
+  add column if not exists timezone text not null default 'Europe/Moscow';
+
+update public.opera_houses set timezone = 'Asia/Almaty'
+  where slug = 'astana-opera' and timezone = 'Europe/Moscow';
+update public.opera_houses set timezone = 'Asia/Yekaterinburg'
+  where slug = 'perm-opera' and timezone = 'Europe/Moscow';
 
 create table if not exists public.playbill_entries (
   id uuid primary key default gen_random_uuid(),
