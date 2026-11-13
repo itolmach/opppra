@@ -31,8 +31,9 @@
 		AA0022 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0022 /* SettingsView.swift */; };
 		AA0023 /* AddToListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0023 /* AddToListView.swift */; };
 		AA0024 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0025 /* AppConfig.swift */; };
-		AA0025 /* SupabaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0026 /* SupabaseManager.swift */; };
+		AA0025 /* NeonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0026 /* NeonClient.swift */; };
 		AA0026 /* OCRService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0027 /* OCRService.swift */; };
+		AA0027 /* Search.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0030 /* Search.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -61,8 +62,9 @@
 		BB0023 /* AddToListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddToListView.swift; sourceTree = "<group>"; };
 		BB0024 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BB0025 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
-		BB0026 /* SupabaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseManager.swift; sourceTree = "<group>"; };
+		BB0026 /* NeonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeonClient.swift; sourceTree = "<group>"; };
 		BB0027 /* OCRService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRService.swift; sourceTree = "<group>"; };
+		BB0030 /* Search.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Search.swift; sourceTree = "<group>"; };
 		BB0028 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 		BB0029 /* Config.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig.example; sourceTree = "<group>"; };
 		DD0001 /* OperaApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OperaApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -126,6 +128,7 @@
 				BB0006 /* Opera.swift */,
 				BB0007 /* UserList.swift */,
 				BB0008 /* Recommendation.swift */,
+				BB0030 /* Search.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -135,7 +138,7 @@
 			children = (
 				BB0009 /* AuthenticationService.swift */,
 				BB0010 /* APIService.swift */,
-				BB0026 /* SupabaseManager.swift */,
+				BB0026 /* NeonClient.swift */,
 				BB0027 /* OCRService.swift */,
 			);
 			path = Services;
@@ -359,8 +362,9 @@
 				AA0022 /* SettingsView.swift in Sources */,
 				AA0023 /* AddToListView.swift in Sources */,
 				AA0024 /* AppConfig.swift in Sources */,
-				AA0025 /* SupabaseManager.swift in Sources */,
+				AA0025 /* NeonClient.swift in Sources */,
 				AA0026 /* OCRService.swift in Sources */,
+				AA0027 /* Search.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

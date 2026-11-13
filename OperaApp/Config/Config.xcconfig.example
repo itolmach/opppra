@@ -1,12 +1,22 @@
-// Copy this file to Config.xcconfig (same folder) and fill in your own
-// Supabase project's values. Config.xcconfig is gitignored so your values
-// never get committed. See ../../SUPABASE_SETUP.md for where to find these.
+// Copy this file to Config.xcconfig (same folder) and fill in your own Neon
+// project's values. Config.xcconfig is gitignored, so your values never get
+// committed. See ../../NEON_SETUP.md for where to find each one.
 //
-// The anon key is Supabase's public client key (safe to ship in an app --
-// access is enforced by the Row Level Security policies in
-// supabase/migrations, not by keeping this key secret). The project URL is
-// not sensitive either, but keeping both out of git avoids hardcoding a
-// specific project into source control.
+// There is no API key here. Supabase needed an anon key; Neon's Data API
+// does not -- an unauthenticated request runs as the `anonymous` Postgres
+// role and a signed-in one carries a JWT. Either way the authorization
+// boundary is row level security in the database, not a secret in the app.
+//
+// xcconfig treats // as a comment everywhere, including inside a value, so
+// the $() below splits the "//" in https:// and is load-bearing. Without it
+// each URL is silently truncated to "https:".
 
-SUPABASE_URL = https:/$()/YOUR-PROJECT.supabase.co
-SUPABASE_ANON_KEY = YOUR-ANON-KEY
+NEON_DATA_API_URL = https:/$()/YOUR-ENDPOINT.apirest.REGION.aws.neon.tech/opera/rest/v1
+NEON_AUTH_URL = https:/$()/YOUR-ENDPOINT.neonauth.REGION.aws.neon.tech/opera/auth
+
+// Sent as the Origin header on every auth call. Better Auth checks it
+// against the project's trusted origins, so this exact value must be added
+// there (Neon console -> Auth -> trusted domains) or sign-in fails with
+// INVALID_ORIGIN. It also has to match a URL scheme this app registers, in
+// Info.plist under CFBundleURLTypes.
+NEON_AUTH_ORIGIN = operaapp:/$()/auth

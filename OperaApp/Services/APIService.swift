@@ -2,730 +2,522 @@
 //  APIService.swift
 //  OperaApp
 //
-//  Two data sources, both real:
-//  - The OpenOpus API (https://api.openopus.org) for the opera/composer
-//    catalog -- a free public catalog, so there's nothing to self-host here.
-//  - Supabase Postgres for everything user-owned: lists, attendance logs,
-//    recommendation feedback, plus the productions/venues/performances
-//    catalog that OpenOpus doesn't provide.
+//  Reads and writes through Neon's Data API.
+//
+//  Every method signature is unchanged from the Supabase version, so no view
+//  needed editing. Two things did change underneath, and they matter:
+//
+//  1. The catalogue is ours now. Search used to call OpenOpus and build
+//     "\(composer.id)-\(work.id)" as the opera id. That id matched nothing
+//     the web app wrote, so a work saved on the phone never appeared on the
+//     web and vice versa. Operas now come from our own opera_works table and
+//     the id is its uuid -- the same value the web app stores in
+//     list_items.opera_id and attendance_logs.opera_id.
+//
+//  2. Row level security does the filtering. None of these queries carry a
+//     user id: "the rows I am allowed to see" is already the right answer,
+//     and adding a client-side filter would only invite the two to disagree.
 //
 
 import Foundation
-import Supabase
-
-// MARK: - OpenOpus API Response Types
-
-struct OpenOpusSearchResponse: Codable {
-    let results: [OpenOpusWork]?
-}
-
-struct OpenOpusWork: Codable {
-    let id: String
-    let title: String
-    let subtitle: String?
-    let genre: String?
-    let composer: OpenOpusComposer?
-    let year: String?
-    let recommended: Bool?
-}
-
-struct OpenOpusComposer: Codable {
-    let id: String
-    let name: String
-    let complete_name: String?
-    let birth: String?
-    let death: String?
-    let epoch: String?
-    let portrait: String?
-}
-
-struct OpenOpusWorkDetail: Codable {
-    let work: OpenOpusWorkDetailData?
-}
-
-struct OpenOpusWorkDetailData: Codable {
-    let id: String
-    let title: String
-    let subtitle: String?
-    let genre: String?
-    let composer: OpenOpusComposer
-    let year: String?
-    let recommended: Bool?
-}
-
-struct OpenOpusComposersResponse: Codable {
-    let composers: [OpenOpusComposer]
-}
-
-struct OpenOpusWorksResponse: Codable {
-    let works: [OpenOpusWork]?
-}
-
-enum APIError: LocalizedError {
-    case notAuthenticated
-
-    var errorDescription: String? {
-        switch self {
-        case .notAuthenticated:
-            return "You need to be signed in to do that."
-        }
-    }
-}
 
 class APIService {
     static let shared = APIService()
-
-    private let openOpusBaseURL = "https://api.openopus.org"
-    private var db: SupabaseClient { SupabaseManager.client }
-
     private init() {}
 
-    private func currentUserId() async throws -> UUID {
-        guard let userId = try? await db.auth.session.user.id else {
-            throw APIError.notAuthenticated
+    private var neon: NeonClient { NeonClient.shared }
+
+    // MARK: - Wire shapes
+
+    private struct ComposerRow: Decodable {
+        let name: String
+        let portraitUrl: String?
+    }
+
+    private struct WorkRow: Decodable {
+        let id: UUID
+        let title: String
+        let language: String?
+        let premiereYear: Int?
+        let description: String?
+        let imageUrl: String?
+        let operaComposers: ComposerRow?
+
+        func asOpera() -> Opera {
+            Opera(
+                id: id.uuidString,
+                title: title,
+                composer: operaComposers?.name ?? "Unknown",
+                composerId: nil,
+                librettist: nil,
+                premiereYear: premiereYear,
+                // The catalogue carries a premiere year but no era, so it is
+                // derived rather than invented or left blank.
+                era: Self.era(for: premiereYear),
+                language: language ?? "",
+                synopsis: description ?? "",
+                duration: nil,
+                acts: nil,
+                // The only picture the catalogue has for a work is its
+                // composer's portrait, from Wikimedia via Wikidata.
+                imageURL: imageUrl ?? operaComposers?.portraitUrl,
+                popularity: 0,
+                tags: [],
+                createdAt: Date(),
+                updatedAt: Date()
+            )
         }
-        return userId
-    }
 
-    // MARK: - Search (OpenOpus)
-
-    private func searchComposers(query: String) async throws -> [OpenOpusComposer] {
-        let urlString = "\(openOpusBaseURL)/composer/list/search/\(query.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? query).json"
-
-        guard let url = URL(string: urlString) else { return [] }
-
-        let (data, _) = try await URLSession.shared.data(from: url)
-        let response = try JSONDecoder().decode(OpenOpusComposersResponse.self, from: data)
-        return response.composers
-    }
-
-    func search(query: String, filters: SearchFilters? = nil) async throws -> [SearchResult] {
-        guard !query.isEmpty else { return [] }
-
-        var results: [SearchResult] = []
-
-        let composers = try await searchComposers(query: query)
-
-        for composer in composers.prefix(3) {
-            let worksURL = "\(openOpusBaseURL)/work/list/composer/\(composer.id)/genre/Opera.json"
-
-            guard let url = URL(string: worksURL) else { continue }
-            do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                let worksResponse = try JSONDecoder().decode(OpenOpusWorksResponse.self, from: data)
-
-                if let works = worksResponse.works {
-                    for work in works.prefix(5) {
-                        results.append(
-                            SearchResult(
-                                id: "\(composer.id)-\(work.id)",
-                                type: .opera,
-                                title: work.title,
-                                subtitle: composer.complete_name ?? composer.name,
-                                imageURL: composer.portrait
-                            )
-                        )
-                    }
-                }
-            } catch {
-                continue
+        private static func era(for year: Int?) -> String {
+            guard let year else { return "Unknown" }
+            switch year {
+            case ..<1600: return "Renaissance"
+            case ..<1750: return "Baroque"
+            case ..<1830: return "Classical"
+            case ..<1900: return "Romantic"
+            case ..<1950: return "Modern"
+            default: return "Contemporary"
             }
         }
-
-        return results
     }
 
-    // MARK: - Opera Works (OpenOpus)
+    /// A translated title, with its work nested. Used so a Russian or Italian
+    /// search term finds the work it belongs to.
+    private struct TitleRow: Decodable {
+        let title: String
+        let language: String
+        let operaWorks: WorkRow?
+    }
+
+    private struct ListRow: Decodable {
+        let id: UUID
+        let name: String
+        let type: String
+        let isDefault: Bool
+        let color: String?
+        let iconName: String?
+        let createdAt: Date
+        let updatedAt: Date
+        let listItems: [ListItemRow]?
+
+        func asUserList() -> UserList {
+            UserList(
+                id: id.uuidString,
+                name: name,
+                type: UserList.ListType(rawValue: type) ?? .custom,
+                items: (listItems ?? []).map { $0.asListItem() },
+                isDefault: isDefault,
+                color: color,
+                iconName: iconName,
+                createdAt: createdAt,
+                updatedAt: updatedAt
+            )
+        }
+    }
+
+    private struct ListItemRow: Decodable {
+        let id: UUID
+        let operaId: String
+        let operaTitle: String
+        let composer: String
+        let imageUrl: String?
+        let notes: String?
+        let tags: [String]?
+        let priority: Int?
+        let addedAt: Date
+        let experiencedDate: Date?
+        let rating: Double?
+        let productionId: String?
+
+        func asListItem() -> ListItem {
+            ListItem(
+                id: id.uuidString,
+                operaId: operaId,
+                operaTitle: operaTitle,
+                composer: composer,
+                imageURL: imageUrl,
+                notes: notes,
+                tags: tags ?? [],
+                priority: priority,
+                addedAt: addedAt,
+                experiencedDate: experiencedDate,
+                rating: rating,
+                productionId: productionId
+            )
+        }
+    }
+
+    private struct LogRow: Decodable {
+        let id: UUID
+        let userId: UUID
+        let operaId: String
+        let operaTitle: String
+        let composer: String
+        let productionId: String?
+        let venueId: String?
+        let venueName: String
+        let city: String
+        let country: String
+        let attendanceDate: Date
+        let performanceTime: String?
+        let overallRating: Double?
+        let musicRating: Double?
+        let performanceRating: Double?
+        let productionRating: Double?
+        let notes: String?
+        let tags: [String]?
+        let photos: [String]?
+        let ticketImageUrl: String?
+        let createdAt: Date
+        let updatedAt: Date
+
+        func asAttendanceLog() -> AttendanceLog {
+            AttendanceLog(
+                id: id.uuidString,
+                userId: userId.uuidString,
+                operaId: operaId,
+                operaTitle: operaTitle,
+                composer: composer,
+                productionId: productionId,
+                venueId: venueId,
+                venueName: venueName,
+                city: city,
+                country: country,
+                attendanceDate: attendanceDate,
+                performanceTime: performanceTime,
+                overallRating: overallRating,
+                musicRating: musicRating,
+                performanceRating: performanceRating,
+                productionRating: productionRating,
+                notes: notes,
+                tags: tags ?? [],
+                photos: photos ?? [],
+                ticketImageURL: ticketImageUrl,
+                ticketData: nil,
+                createdAt: createdAt,
+                updatedAt: updatedAt
+            )
+        }
+    }
+
+    // MARK: - Catalogue
+
+    private static let workSelect =
+        "id,title,language,premiere_year,description,image_url,opera_composers(name,portrait_url)"
+
+    /// Searches the catalogue by title, by translated title, and by composer.
+    ///
+    /// Three queries rather than one because they hit different tables and
+    /// PostgREST cannot OR across an embedded resource and its parent. They
+    /// run concurrently and are merged here, de-duplicated by work id --
+    /// "Хованщина" matches both the work title and its Russian title row,
+    /// and should appear once.
+    func search(query: String, filters: SearchFilters? = nil) async throws -> [SearchResult] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard term.count >= 2 else { return [] }
+        let pattern = "ilike.*\(Self.escape(term))*"
+
+        async let byTitle = try? neon.get(
+            "opera_works",
+            query: "select=\(Self.workSelect)&status=eq.published&title=\(pattern)&limit=25",
+            as: [WorkRow].self)
+
+        async let byTranslation = try? neon.get(
+            "opera_titles",
+            query: "select=title,language,opera_works(\(Self.workSelect))&title=\(pattern)&limit=25",
+            as: [TitleRow].self)
+
+        async let byComposer = try? neon.get(
+            "opera_works",
+            query: "select=\(Self.workSelect)&status=eq.published" +
+                   "&opera_composers.name=\(pattern)&limit=25",
+            as: [WorkRow].self)
+
+        var seen = Set<UUID>()
+        var operas: [Opera] = []
+        for row in (await byTitle ?? []) + (await byTranslation ?? []).compactMap({ $0.operaWorks })
+                 + (await byComposer ?? []) {
+            guard seen.insert(row.id).inserted else { continue }
+            operas.append(row.asOpera())
+        }
+        return operas.map { SearchResult(opera: $0) }
+    }
 
     func fetchOpera(id: String) async throws -> Opera {
-        let popular = try await fetchPopularOperas()
-        if let opera = popular.first(where: { $0.id == id }) {
-            return opera
+        let rows = try await neon.get(
+            "opera_works",
+            query: "select=\(Self.workSelect)&id=eq.\(id)&limit=1",
+            as: [WorkRow].self)
+        guard let row = rows.first else {
+            throw NeonError.api(status: 404, code: nil, message: "No opera with id \(id)")
         }
-        throw URLError(.fileDoesNotExist)
+        return row.asOpera()
     }
 
+    /// There is no popularity column, so "popular" is the best proxy the
+    /// catalogue supports: well-documented works, newest premieres first.
+    /// Named as it is only because the views already call it that.
     func fetchPopularOperas(limit: Int = 20) async throws -> [Opera] {
-        let urlString = "\(openOpusBaseURL)/composer/list/pop.json"
-        guard let url = URL(string: urlString) else { return [] }
-
-        let (data, _) = try await URLSession.shared.data(from: url)
-        let response = try JSONDecoder().decode(OpenOpusComposersResponse.self, from: data)
-
-        var allOperas: [Opera] = []
-
-        for composer in response.composers.prefix(5) {
-            let worksURL = "\(openOpusBaseURL)/work/list/composer/\(composer.id)/genre/Opera.json"
-            guard let url = URL(string: worksURL) else { continue }
-
-            do {
-                let (worksData, _) = try await URLSession.shared.data(from: url)
-                let worksResponse = try JSONDecoder().decode(OpenOpusWorksResponse.self, from: worksData)
-
-                if let works = worksResponse.works {
-                    for work in works.prefix(4) {
-                        allOperas.append(
-                            Opera(
-                                id: "\(composer.id)-\(work.id)",
-                                title: work.title,
-                                composer: composer.complete_name ?? composer.name,
-                                composerId: composer.id,
-                                librettist: nil,
-                                premiereYear: Int(work.year ?? ""),
-                                era: composer.epoch ?? "Unknown",
-                                language: "Various",
-                                synopsis: work.subtitle ?? "A masterful opera by \(composer.name)",
-                                duration: nil,
-                                acts: nil,
-                                imageURL: composer.portrait,
-                                popularity: work.recommended == true ? 90 : 70,
-                                tags: [composer.epoch ?? "Classical", "Opera", work.genre ?? ""],
-                                createdAt: Date(),
-                                updatedAt: Date()
-                            )
-                        )
-                    }
-                }
-            } catch {
-                continue
-            }
-
-            if allOperas.count >= limit {
-                break
-            }
-        }
-
-        return Array(allOperas.prefix(limit))
+        let rows = try await neon.get(
+            "opera_works",
+            query: "select=\(Self.workSelect)&status=eq.published" +
+                   "&premiere_year=not.is.null&order=premiere_year.desc&limit=\(limit)",
+            as: [WorkRow].self)
+        return rows.map { $0.asOpera() }
     }
 
-    // MARK: - Productions (Supabase)
+    // MARK: - Productions
+    //
+    // The productions, venues and performances tables exist but have never
+    // been populated: the playbill work went into opera_houses and
+    // playbill_entries instead, which the web app's Афиша reads. These stay
+    // so the views that call them still build, and return nothing rather
+    // than failing.
 
     func fetchProduction(id: String) async throws -> Production {
-        let row: ProductionRow = try await db
-            .from("productions")
-            .select(ProductionRow.selectQuery)
-            .eq("id", value: id)
-            .single()
-            .execute()
-            .value
-        return row.asProduction()
+        throw NeonError.api(status: 404, code: nil,
+                            message: "Productions are not populated yet.")
     }
 
-    func fetchUpcomingProductions(limit: Int = 20) async throws -> [Production] {
-        let rows: [ProductionRow] = try await db
-            .from("productions")
-            .select(ProductionRow.selectQuery)
-            .execute()
-            .value
+    func fetchUpcomingProductions(limit: Int = 20) async throws -> [Production] { [] }
 
-        return rows
-            .map { $0.asProduction() }
-            .filter { $0.hasUpcomingPerformances }
-            .sorted { ($0.nextPerformance?.date ?? .distantFuture) < ($1.nextPerformance?.date ?? .distantFuture) }
-            .prefix(limit)
-            .map { $0 }
-    }
+    func fetchProductionsForOpera(operaId: String) async throws -> [Production] { [] }
 
-    func fetchProductionsForOpera(operaId: String) async throws -> [Production] {
-        let rows: [ProductionRow] = try await db
-            .from("productions")
-            .select(ProductionRow.selectQuery)
-            .eq("opera_id", value: operaId)
-            .execute()
-            .value
-        return rows.map { $0.asProduction() }
-    }
-
-    // MARK: - User Lists (Supabase)
+    // MARK: - Lists
 
     func fetchUserLists() async throws -> [UserList] {
-        let userId = try await currentUserId()
-        let rows: [UserListRow] = try await db
-            .from("user_lists")
-            .select("*, list_items(*)")
-            .eq("user_id", value: userId)
-            .order("created_at", ascending: true)
-            .execute()
-            .value
+        let rows = try await neon.get(
+            "user_lists",
+            query: "select=id,name,type,is_default,color,icon_name,created_at,updated_at," +
+                   "list_items(id,opera_id,opera_title,composer,image_url,notes,tags,priority," +
+                   "added_at,experienced_date,rating,production_id)&order=created_at",
+            as: [ListRow].self)
         return rows.map { $0.asUserList() }
     }
 
     func createList(name: String, type: UserList.ListType) async throws -> UserList {
-        let userId = try await currentUserId()
-        struct Insert: Encodable {
-            let user_id: UUID
+        struct NewList: Encodable {
+            let userId: String
             let name: String
             let type: String
-            let is_default: Bool
+            let isDefault: Bool
         }
-        let row: UserListRow = try await db
-            .from("user_lists")
-            .insert(Insert(user_id: userId, name: name, type: type.rawValue, is_default: false))
-            .select("*, list_items(*)")
-            .single()
-            .execute()
-            .value
+        let userId = try await currentUserId()
+        let rows = try await neon.post(
+            "user_lists",
+            body: [NewList(userId: userId, name: name, type: type.rawValue, isDefault: false)],
+            as: [ListRow].self)
+        guard let row = rows.first else {
+            throw NeonError.api(status: 500, code: nil, message: "The list was not created.")
+        }
         return row.asUserList()
     }
 
     func addToList(listId: String, opera: Opera, notes: String? = nil) async throws {
-        let userId = try await currentUserId()
-        struct Insert: Encodable {
-            let list_id: String
-            let user_id: UUID
-            let opera_id: String
-            let opera_title: String
+        struct NewItem: Encodable {
+            let listId: String
+            let userId: String
+            let operaId: String
+            let operaTitle: String
             let composer: String
-            let image_url: String?
+            let imageUrl: String?
             let notes: String?
         }
-        try await db
-            .from("list_items")
-            .insert(Insert(
-                list_id: listId,
-                user_id: userId,
-                opera_id: opera.id,
-                opera_title: opera.title,
-                composer: opera.composer,
-                image_url: opera.imageURL,
-                notes: notes
-            ))
-            .execute()
+        let userId = try await currentUserId()
+        _ = try await neon.post(
+            "list_items",
+            body: [NewItem(listId: listId, userId: userId, operaId: opera.id,
+                           operaTitle: opera.title, composer: opera.composer,
+                           imageUrl: opera.imageURL, notes: notes)],
+            as: [ListItemRow].self)
     }
 
     func removeFromList(listId: String, itemId: String) async throws {
-        try await db
-            .from("list_items")
-            .delete()
-            .eq("id", value: itemId)
-            .eq("list_id", value: listId)
-            .execute()
+        try await neon.delete("list_items", query: "id=eq.\(itemId)&list_id=eq.\(listId)")
     }
 
-    // MARK: - Attendance Logs (Supabase)
+    // MARK: - Attendance logs
+
+    private static let logSelect =
+        "id,user_id,opera_id,opera_title,composer,production_id,venue_id,venue_name,city," +
+        "country,attendance_date,performance_time,overall_rating,music_rating," +
+        "performance_rating,production_rating,notes,tags,photos,ticket_image_url," +
+        "created_at,updated_at"
 
     func fetchAttendanceLogs() async throws -> [AttendanceLog] {
-        let userId = try await currentUserId()
-        let rows: [AttendanceLogRow] = try await db
-            .from("attendance_logs")
-            .select()
-            .eq("user_id", value: userId)
-            .order("attendance_date", ascending: false)
-            .execute()
-            .value
+        let rows = try await neon.get(
+            "attendance_logs",
+            query: "select=\(Self.logSelect)&order=attendance_date.desc",
+            as: [LogRow].self)
         return rows.map { $0.asAttendanceLog() }
+    }
+
+    private struct LogPayload: Encodable {
+        let userId: String
+        let operaId: String
+        let operaTitle: String
+        let composer: String
+        let productionId: String?
+        let venueId: String?
+        let venueName: String
+        let city: String
+        let country: String
+        let attendanceDate: Date
+        let performanceTime: String?
+        let overallRating: Double?
+        let musicRating: Double?
+        let performanceRating: Double?
+        let productionRating: Double?
+        let notes: String?
+        let tags: [String]
+        let photos: [String]
+        let ticketImageUrl: String?
+
+        init(_ log: AttendanceLog, userId: String) {
+            self.userId = userId
+            operaId = log.operaId
+            operaTitle = log.operaTitle
+            composer = log.composer
+            productionId = log.productionId
+            venueId = log.venueId
+            // These three are NOT NULL in the schema with no default, so an
+            // empty string is the right value for "not recorded" -- sending
+            // null fails the insert outright.
+            venueName = log.venueName
+            city = log.city
+            country = log.country
+            attendanceDate = log.attendanceDate
+            performanceTime = log.performanceTime
+            overallRating = log.overallRating
+            musicRating = log.musicRating
+            performanceRating = log.performanceRating
+            productionRating = log.productionRating
+            notes = log.notes
+            tags = log.tags
+            photos = log.photos
+            ticketImageUrl = log.ticketImageURL
+        }
     }
 
     func createAttendanceLog(_ log: AttendanceLog) async throws -> AttendanceLog {
         let userId = try await currentUserId()
-        let row: AttendanceLogRow = try await db
-            .from("attendance_logs")
-            .insert(AttendanceLogRow(from: log, userId: userId))
-            .select()
-            .single()
-            .execute()
-            .value
+        let rows = try await neon.post(
+            "attendance_logs", body: [LogPayload(log, userId: userId)], as: [LogRow].self)
+        guard let row = rows.first else {
+            throw NeonError.api(status: 500, code: nil, message: "The log was not saved.")
+        }
         return row.asAttendanceLog()
     }
 
     func updateAttendanceLog(_ log: AttendanceLog) async throws -> AttendanceLog {
         let userId = try await currentUserId()
-        let row: AttendanceLogRow = try await db
-            .from("attendance_logs")
-            .update(AttendanceLogRow(from: log, userId: userId))
-            .eq("id", value: log.id)
-            .select()
-            .single()
-            .execute()
-            .value
+        let rows = try await neon.patch(
+            "attendance_logs",
+            query: "id=eq.\(log.id)&select=\(Self.logSelect)",
+            body: LogPayload(log, userId: userId),
+            as: [LogRow].self)
+        guard let row = rows.first else {
+            throw NeonError.api(status: 404, code: nil, message: "That log no longer exists.")
+        }
         return row.asAttendanceLog()
     }
 
     func deleteAttendanceLog(id: String) async throws {
-        try await db.from("attendance_logs").delete().eq("id", value: id).execute()
+        try await neon.delete("attendance_logs", query: "id=eq.\(id)")
     }
 
     // MARK: - Recommendations
+    //
+    // Previously assembled from OpenOpus popularity. With our own catalogue
+    // there is nothing yet that deserves the name, so this returns works the
+    // user has not already logged or listed -- honest, and useful -- rather
+    // than pretending to a recommender that does not exist.
 
-    /// Rules-based recommendations from the user's taste profile: favorite
-    /// composers/eras are weighted highest, general popularity fills in the
-    /// rest. Not machine-learned, but real -- it reflects each user's actual
-    /// profile and actual catalog/list state, nothing mocked.
     func fetchRecommendations(limit: Int = 10) async throws -> [Recommendation] {
-        let userId = try await currentUserId()
+        let seen = Set(try await fetchAttendanceLogs().map(\.operaId))
+        let listed = Set(try await fetchUserLists().flatMap { $0.items }.map(\.operaId))
+        let known = seen.union(listed)
 
-        async let catalogTask = fetchPopularOperas(limit: 40)
-        async let ownedTask: [String] = db
-            .from("list_items")
-            .select("opera_id")
-            .eq("user_id", value: userId)
-            .execute()
-            .value
-            .map { (row: OperaIdRow) in row.opera_id }
-        async let dislikedTask: [String] = db
-            .from("recommendation_feedback")
-            .select("reference_id")
-            .eq("user_id", value: userId)
-            .eq("liked", value: false)
-            .execute()
-            .value
-            .map { (row: ReferenceIdRow) in row.reference_id }
-
-        let catalog = try await catalogTask
-        let owned = Set((try? await ownedTask) ?? [])
-        let disliked = Set((try? await dislikedTask) ?? [])
-
-        let favoriteComposers = Set(
-            (AuthenticationService.shared.currentUser?.favoriteComposers ?? []).map { $0.lowercased() }
-        )
-        let favoriteEras = Set(
-            (AuthenticationService.shared.currentUser?.favoriteEras ?? []).map { $0.lowercased() }
-        )
-
-        let scored: [Recommendation] = catalog
-            .filter { !owned.contains($0.id) && !disliked.contains($0.id) }
+        let candidates = try await fetchPopularOperas(limit: limit + known.count)
+        return candidates
+            .filter { !known.contains($0.id) }
+            .prefix(limit)
             .map { opera in
-                var score = 0.4 + Double(opera.popularity) / 500.0
-                var reason = "Popular with opera lovers"
-
-                if favoriteComposers.contains(opera.composer.lowercased()) {
-                    score += 0.35
-                    reason = "By \(opera.composer), one of your favorite composers"
-                } else if favoriteEras.contains(opera.era.lowercased()) {
-                    score += 0.15
-                    reason = "Matches your taste for \(opera.era) opera"
-                }
-
-                return Recommendation(
-                    id: "rec-\(opera.id)",
+                Recommendation(
+                    id: UUID().uuidString,
                     type: .opera,
                     title: opera.title,
                     subtitle: opera.composerAndYear,
                     description: opera.synopsis,
                     imageURL: opera.imageURL,
-                    reason: reason,
+                    reason: "In the catalogue, and not yet on your lists",
+                    // referenceId is the opera's id, so feedback and the tap
+                    // target both resolve to the same work.
                     referenceId: opera.id,
                     referenceType: .opera,
-                    score: min(score, 0.99),
-                    createdAt: Date()
-                )
+                    score: 0,
+                    createdAt: Date())
             }
-
-        return Array(scored.sorted { $0.score > $1.score }.prefix(limit))
     }
 
     func updateRecommendationFeedback(id: String, liked: Bool) async throws {
-        let userId = try await currentUserId()
-        // Recommendation ids from fetchRecommendations() are always
-        // "rec-<operaId>"; recover the underlying catalog id from it.
-        let referenceId = id.hasPrefix("rec-") ? String(id.dropFirst("rec-".count)) : id
-
-        struct Upsert: Encodable {
-            let user_id: UUID
-            let reference_id: String
-            let reference_type: String
+        struct Feedback: Encodable {
+            let userId: String
+            let referenceId: String
+            let referenceType: String
             let liked: Bool
         }
-        try await db
-            .from("recommendation_feedback")
-            .upsert(
-                Upsert(user_id: userId, reference_id: referenceId, reference_type: "opera", liked: liked),
-                onConflict: "user_id,reference_id,reference_type"
-            )
-            .execute()
-    }
-
-    // MARK: - Ticket Photo Storage
-
-    func uploadTicketPhoto(imageData: Data) async throws -> String {
         let userId = try await currentUserId()
-        let path = "\(userId.uuidString)/\(UUID().uuidString).jpg"
-        try await db.storage.from("ticket-photos").upload(
-            path,
-            data: imageData,
-            options: FileOptions(contentType: "image/jpeg")
-        )
-        return path
-    }
-}
-
-// MARK: - Supporting Types
-
-struct SearchFilters: Codable {
-    var era: String?
-    var composer: String?
-    var venue: String?
-    var language: String?
-}
-
-struct SearchResult: Identifiable {
-    let id: String
-    let type: SearchResultItemType
-    let title: String
-    let subtitle: String
-    let imageURL: String?
-}
-
-enum SearchResultItemType {
-    case opera
-    case production
-    case venue
-    case artist
-}
-
-// MARK: - Supabase row <-> model mapping
-
-private struct OperaIdRow: Decodable { let opera_id: String }
-private struct ReferenceIdRow: Decodable { let reference_id: String }
-
-private struct VenueRow: Codable {
-    let id: String
-    let name: String
-    let city: String
-    let country: String
-    let address: String?
-    let latitude: Double?
-    let longitude: Double?
-    let image_url: String?
-    let website: String?
-    let capacity: Int?
-
-    func asVenue() -> Venue {
-        Venue(
-            id: id, name: name, city: city, country: country, address: address,
-            latitude: latitude, longitude: longitude, imageURL: image_url,
-            website: website, capacity: capacity
-        )
-    }
-}
-
-private struct CastMemberRow: Codable {
-    let id: String
-    let name: String
-    let role: String
-    let artist_id: String?
-    let image_url: String?
-
-    func asCastMember() -> CastMember {
-        CastMember(id: id, name: name, role: role, artistId: artist_id, imageURL: image_url)
-    }
-}
-
-private struct PerformanceRow: Codable {
-    let id: String
-    let production_id: String
-    let date: Date
-    let time: String
-    let ticket_url: String?
-    let ticket_price_range: String?
-    let is_sold_out: Bool
-    let notes: String?
-
-    func asPerformance() -> Performance {
-        Performance(
-            id: id, productionId: production_id, date: date, time: time,
-            ticketURL: ticket_url, ticketPriceRange: ticket_price_range,
-            isSoldOut: is_sold_out, notes: notes
-        )
-    }
-}
-
-private struct ProductionRow: Codable {
-    static let selectQuery = "*, venue:venues(*), cast_members(*), performances(*)"
-
-    let id: String
-    let opera_id: String
-    let opera_title: String
-    let company: String
-    let company_id: String?
-    let director: String?
-    let conductor: String?
-    let choreographer: String?
-    let production_year: Int?
-    let designer: String?
-    let description: String?
-    let image_url: String?
-    let image_gallery: [String]
-    let created_at: Date
-    let updated_at: Date
-    let venue: VenueRow?
-    let cast_members: [CastMemberRow]
-    let performances: [PerformanceRow]
-
-    func asProduction() -> Production {
-        Production(
-            id: id,
-            operaId: opera_id,
-            operaTitle: opera_title,
-            company: company,
-            companyId: company_id,
-            director: director,
-            conductor: conductor,
-            choreographer: choreographer,
-            productionYear: production_year,
-            designer: designer,
-            cast: cast_members.map { $0.asCastMember() },
-            venue: venue?.asVenue() ?? Venue(
-                id: "unknown", name: "Unknown venue", city: "", country: "",
-                address: nil, latitude: nil, longitude: nil, imageURL: nil, website: nil, capacity: nil
-            ),
-            performances: performances.map { $0.asPerformance() },
-            description: description,
-            imageURL: image_url,
-            imageGallery: image_gallery,
-            createdAt: created_at,
-            updatedAt: updated_at
-        )
-    }
-}
-
-private struct ListItemRow: Codable {
-    let id: String
-    let opera_id: String
-    let opera_title: String
-    let composer: String
-    let image_url: String?
-    let notes: String?
-    let tags: [String]
-    let priority: Int?
-    let added_at: Date
-    let experienced_date: Date?
-    let rating: Double?
-    let production_id: String?
-
-    func asListItem() -> ListItem {
-        ListItem(
-            id: id, operaId: opera_id, operaTitle: opera_title, composer: composer,
-            imageURL: image_url, notes: notes, tags: tags, priority: priority,
-            addedAt: added_at, experiencedDate: experienced_date, rating: rating,
-            productionId: production_id
-        )
-    }
-}
-
-private struct UserListRow: Codable {
-    let id: String
-    let name: String
-    let type: String
-    let is_default: Bool
-    let color: String?
-    let icon_name: String?
-    let created_at: Date
-    let updated_at: Date
-    let list_items: [ListItemRow]
-
-    func asUserList() -> UserList {
-        UserList(
-            id: id,
-            name: name,
-            type: UserList.ListType(rawValue: type) ?? .custom,
-            items: list_items.map { $0.asListItem() },
-            isDefault: is_default,
-            color: color,
-            iconName: icon_name,
-            createdAt: created_at,
-            updatedAt: updated_at
-        )
-    }
-}
-
-private struct AttendanceLogRow: Codable {
-    let id: String
-    let user_id: UUID
-    let opera_id: String
-    let opera_title: String
-    let composer: String
-    let production_id: String?
-    let venue_id: String?
-    let venue_name: String
-    let city: String
-    let country: String
-    let attendance_date: Date
-    let performance_time: String?
-    let overall_rating: Double?
-    let music_rating: Double?
-    let performance_rating: Double?
-    let production_rating: Double?
-    let notes: String?
-    let tags: [String]
-    let photos: [String]
-    let ticket_image_url: String?
-    let ticket_scanned_text: String?
-    let ticket_extracted_date: Date?
-    let ticket_extracted_venue: String?
-    let ticket_extracted_seat_info: String?
-    let ticket_extracted_price: String?
-    let created_at: Date
-    let updated_at: Date
-
-    init(from log: AttendanceLog, userId: UUID) {
-        id = log.id
-        user_id = userId
-        opera_id = log.operaId
-        opera_title = log.operaTitle
-        composer = log.composer
-        production_id = log.productionId
-        venue_id = log.venueId
-        venue_name = log.venueName
-        city = log.city
-        country = log.country
-        attendance_date = log.attendanceDate
-        performance_time = log.performanceTime
-        overall_rating = log.overallRating
-        music_rating = log.musicRating
-        performance_rating = log.performanceRating
-        production_rating = log.productionRating
-        notes = log.notes
-        tags = log.tags
-        photos = log.photos
-        ticket_image_url = log.ticketImageURL
-        ticket_scanned_text = log.ticketData?.scannedText
-        ticket_extracted_date = log.ticketData?.extractedDate
-        ticket_extracted_venue = log.ticketData?.extractedVenue
-        ticket_extracted_seat_info = log.ticketData?.extractedSeatInfo
-        ticket_extracted_price = log.ticketData?.extractedPrice
-        created_at = log.createdAt
-        updated_at = log.updatedAt
+        _ = try await neon.post(
+            "recommendation_feedback",
+            body: [Feedback(userId: userId, referenceId: id,
+                            referenceType: "opera", liked: liked)],
+            as: [EmptyResponse].self,
+            returnRepresentation: false)
     }
 
-    func asAttendanceLog() -> AttendanceLog {
-        let ticketData: TicketData? = {
-            guard ticket_scanned_text != nil || ticket_extracted_date != nil
-                || ticket_extracted_venue != nil || ticket_extracted_seat_info != nil
-                || ticket_extracted_price != nil else { return nil }
-            return TicketData(
-                scannedText: ticket_scanned_text,
-                extractedDate: ticket_extracted_date,
-                extractedVenue: ticket_extracted_venue,
-                extractedSeatInfo: ticket_extracted_seat_info,
-                extractedPrice: ticket_extracted_price
-            )
-        }()
+    // MARK: - Photos
 
-        return AttendanceLog(
-            id: id,
-            userId: user_id.uuidString,
-            operaId: opera_id,
-            operaTitle: opera_title,
-            composer: composer,
-            productionId: production_id,
-            venueId: venue_id,
-            venueName: venue_name,
-            city: city,
-            country: country,
-            attendanceDate: attendance_date,
-            performanceTime: performance_time,
-            overallRating: overall_rating,
-            musicRating: music_rating,
-            performanceRating: performance_rating,
-            productionRating: production_rating,
-            notes: notes,
-            tags: tags,
-            photos: photos,
-            ticketImageURL: ticket_image_url,
-            ticketData: ticketData,
-            createdAt: created_at,
-            updatedAt: updated_at
-        )
+    /// Not wired up yet.
+    ///
+    /// Supabase Storage is gone and Neon Object Storage replaces it, but
+    /// uploading needs a presigned URL, and presigning needs a credential
+    /// that must not ship inside the app. That is a small server-side piece
+    /// (a Neon Function) which does not exist yet. Throwing here is
+    /// deliberate: it keeps the ticket-scanning flow honest instead of
+    /// appearing to save a photo that goes nowhere.
+    func uploadTicketPhoto(imageData: Data) async throws -> String {
+        throw NeonError.api(
+            status: 501, code: nil,
+            message: "Photo upload is not available in this build yet.")
+    }
+
+    // MARK: - Helpers
+
+    /// The signed-in user's id, read from the JWT rather than from a
+    /// round-trip: it is already in the token the request will carry.
+    private func currentUserId() async throws -> String {
+        let jwt = try await neon.jwt()
+        let parts = jwt.split(separator: ".")
+        guard parts.count >= 2 else { throw NeonError.notSignedIn }
+        var payload = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+        guard
+            let data = Data(base64Encoded: payload),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let sub = json["sub"] as? String
+        else { throw NeonError.notSignedIn }
+        return sub
+    }
+
+    /// PostgREST treats these as pattern and list syntax inside a filter, so
+    /// a search for "Don Giovanni, K. 527" must not be read as two values.
+    private static func escape(_ term: String) -> String {
+        term.replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: ",", with: "")
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? term
     }
 }

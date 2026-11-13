@@ -25,10 +25,25 @@
 	<string>We use your location to show nearby opera houses and performances.</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>Add opera performances to your calendar so you never miss a show.</string>
-	<key>SUPABASE_URL</key>
-	<string>$(SUPABASE_URL)</string>
-	<key>SUPABASE_ANON_KEY</key>
-	<string>$(SUPABASE_ANON_KEY)</string>
+	<key>NEON_DATA_API_URL</key>
+	<string>$(NEON_DATA_API_URL)</string>
+	<key>NEON_AUTH_URL</key>
+	<string>$(NEON_AUTH_URL)</string>
+	<key>NEON_AUTH_ORIGIN</key>
+	<string>$(NEON_AUTH_ORIGIN)</string>
+	<!-- Registers operaapp:// so the auth Origin is a scheme this app owns,
+	     rather than a URL belonging to somebody else's site. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.operaapp.OperaApp.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>operaapp</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
 

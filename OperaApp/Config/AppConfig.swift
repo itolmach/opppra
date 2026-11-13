@@ -2,38 +2,49 @@
 //  AppConfig.swift
 //  OperaApp
 //
-//  Reads Supabase connection details injected via Config.xcconfig -> Info.plist.
+//  Neon connection details, injected via Config.xcconfig -> Info.plist.
+//
+//  There is no API key here, and that is not an oversight. Supabase needed an
+//  anon key; Neon's Data API does not. An unauthenticated request is simply
+//  run as the `anonymous` Postgres role, and a signed-in one carries a JWT.
+//  Either way the authorization boundary is row level security in the
+//  database, exactly as it is for the web app.
 //
 
 import Foundation
 
 enum AppConfig {
-    static let supabaseURL: URL = {
+    /// PostgREST-compatible REST interface over the `opera` database.
+    static let dataAPIURL: URL = required("NEON_DATA_API_URL", looksUnset: "YOUR-")
+
+    /// Managed Better Auth: sign-up, sign-in, and the /token endpoint that
+    /// exchanges a session for the JWT the Data API verifies.
+    static let authURL: URL = required("NEON_AUTH_URL", looksUnset: "YOUR-")
+
+    /// Sent as the Origin on auth calls. Better Auth checks it against the
+    /// project's trusted origins, so this value has to be registered in the
+    /// Neon console or every sign-in fails with INVALID_ORIGIN.
+    static let authOrigin: String =
+        (Bundle.main.object(forInfoDictionaryKey: "NEON_AUTH_ORIGIN") as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
+        ?? "operaapp://auth"
+
+    private static func required(_ key: String, looksUnset placeholder: String) -> URL {
         guard
-            let value = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String,
+            let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,
             !value.isEmpty,
-            !value.contains("YOUR-PROJECT"),
+            !value.contains(placeholder),
             let url = URL(string: value)
         else {
+            // Deliberately fatal, and deliberately at launch. A missing
+            // endpoint cannot be recovered from at runtime, and failing here
+            // names the problem instead of surfacing it later as a pile of
+            // unexplained network errors.
             fatalError(
-                "SUPABASE_URL is not configured. Copy OperaApp/Config/Config.xcconfig.example to " +
-                "OperaApp/Config/Config.xcconfig and fill in your Supabase project URL. See SUPABASE_SETUP.md."
+                "\(key) is not configured. Copy OperaApp/Config/Config.xcconfig.example to " +
+                "OperaApp/Config/Config.xcconfig and fill it in. See NEON_SETUP.md."
             )
         }
         return url
-    }()
-
-    static let supabaseAnonKey: String = {
-        guard
-            let value = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as? String,
-            !value.isEmpty,
-            !value.contains("YOUR-ANON-KEY")
-        else {
-            fatalError(
-                "SUPABASE_ANON_KEY is not configured. Copy OperaApp/Config/Config.xcconfig.example to " +
-                "OperaApp/Config/Config.xcconfig and fill in your Supabase anon key. See SUPABASE_SETUP.md."
-            )
-        }
-        return value
-    }()
+    }
 }

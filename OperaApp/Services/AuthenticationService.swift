@@ -2,81 +2,104 @@
 //  AuthenticationService.swift
 //  OperaApp
 //
-//  Handles user authentication and session management via Supabase Auth.
+//  Sign-in against Neon's Managed Better Auth.
+//
+//  The public surface is unchanged from the Supabase version -- same
+//  @Published properties, same method signatures -- so no view had to be
+//  touched when the backend moved. Only what happens inside changed.
 //
 
 import Foundation
-import SwiftUI
-import UIKit
 import AuthenticationServices
-import Supabase
+import CryptoKit
+import UIKit
 
 enum AuthenticationError: LocalizedError {
     case missingAppleIdentityToken
     case notAuthenticated
     case emailConfirmationRequired
+    case appleSignInNotConfigured
 
     var errorDescription: String? {
         switch self {
         case .missingAppleIdentityToken:
-            return "Apple didn't return an identity token. Please try again."
+            return "Apple did not return an identity token."
         case .notAuthenticated:
             return "You need to be signed in to do that."
         case .emailConfirmationRequired:
-            return "Check your email to confirm your account, then sign in."
+            return "Check your inbox to confirm your email address, then sign in."
+        case .appleSignInNotConfigured:
+            return "Sign in with Apple is not set up for this project yet. See NEON_SETUP.md."
         }
     }
 }
 
-// Row shape of `public.profiles`, decoded/encoded directly against Supabase.
+// MARK: - Wire shapes
+
+/// Rows as the Data API returns them. NeonClient decodes with
+/// convertFromSnakeCase, so these are camelCase here and snake_case on the
+/// wire -- deliberately not hand-spelled, which is where the Supabase
+/// version accumulated typos.
 private struct ProfileRow: Codable {
     let id: UUID
     var email: String
-    var display_name: String?
-    var profile_image_url: String?
+    var displayName: String?
+    var profileImageUrl: String?
     var bio: String?
-    var is_profile_public: Bool
-    var show_stats: Bool
-    var show_lists: Bool
-    var favorite_composers: [String]
-    var favorite_choreographers: [String]
-    var favorite_eras: [String]
-    var favorite_houses: [String]
-    var primary_house: String?
-    var has_completed_onboarding: Bool
-    var created_at: Date
-    var updated_at: Date
+    var isProfilePublic: Bool
+    var showStats: Bool
+    var showLists: Bool
+    var favoriteComposers: [String]
+    var favoriteChoreographers: [String]
+    var favoriteEras: [String]
+    var favoriteHouses: [String]
+    var primaryHouse: String?
+    var hasCompletedOnboarding: Bool
+    var createdAt: Date
+    var updatedAt: Date
 
     func asUser(totalExperienced: Int, totalWishlist: Int) -> User {
         User(
             id: id.uuidString,
             email: email,
-            displayName: display_name,
-            profileImageURL: profile_image_url,
+            displayName: displayName,
+            profileImageURL: profileImageUrl,
             bio: bio,
-            isProfilePublic: is_profile_public,
-            showStats: show_stats,
-            showLists: show_lists,
-            favoriteComposers: favorite_composers,
-            favoriteChoreographers: favorite_choreographers,
-            favoriteEras: favorite_eras,
-            favoriteHouses: favorite_houses,
+            isProfilePublic: isProfilePublic,
+            showStats: showStats,
+            showLists: showLists,
+            favoriteComposers: favoriteComposers,
+            favoriteChoreographers: favoriteChoreographers,
+            favoriteEras: favoriteEras,
+            favoriteHouses: favoriteHouses,
             totalExperienced: totalExperienced,
             totalWishlist: totalWishlist,
-            primaryHouse: primary_house,
-            createdAt: created_at,
-            updatedAt: updated_at
+            primaryHouse: primaryHouse,
+            createdAt: createdAt,
+            updatedAt: updatedAt
         )
     }
 }
 
-private struct ProfileStatsRow: Codable {
-    let total_experienced: Int
-    let total_wishlist: Int
+private struct CountRow: Decodable { let count: Int }
+
+/// Better Auth returns the session token alongside the user on sign-in and
+/// sign-up. `token` here is the *session*, not the JWT -- see NeonClient.
+private struct AuthSession: Decodable {
+    let token: String
+    let user: AuthUser
 }
 
+private struct AuthUser: Decodable {
+    let id: UUID
+    let email: String
+    let name: String?
+}
+
+// MARK: - Service
+
 @MainActor
-class AuthenticationService: NSObject, ObservableObject {
+final class AuthenticationService: NSObject, ObservableObject {
     static let shared = AuthenticationService()
 
     @Published var isAuthenticated = false
@@ -85,208 +108,260 @@ class AuthenticationService: NSObject, ObservableObject {
     @Published var hasCompletedOnboarding = false
     @Published var authToken: String?
 
-    private var client: SupabaseClient { SupabaseManager.client }
     private var appleSignInCoordinator: AppleSignInCoordinator?
 
     private override init() {
         super.init()
     }
 
+    // MARK: Session
+
     func checkAuthStatus() {
         isLoading = true
         Task {
+            // A stored session is not proof of a usable one: it can have been
+            // revoked, or the account deleted. Minting a JWT is the cheapest
+            // way to actually ask, so a dead session logs out cleanly instead
+            // of leaving the app in a signed-in state that fails every call.
             do {
-                let session = try await client.auth.session
-                authToken = session.accessToken
+                authToken = try await NeonClient.shared.jwt()
                 isAuthenticated = true
-                await fetchUserProfile()
+                await afterSignIn()
             } catch {
+                await NeonClient.shared.signOut()
                 isAuthenticated = false
                 authToken = nil
+                currentUser = nil
             }
             isLoading = false
         }
     }
 
     func signIn(email: String, password: String) async throws {
-        let session = try await client.auth.signIn(email: email, password: password)
-        authToken = session.accessToken
-        isAuthenticated = true
-        await fetchUserProfile()
+        let session = try await NeonClient.shared.auth(
+            "sign-in/email",
+            body: ["email": email, "password": password],
+            as: AuthSession.self)
+        try await establish(session)
     }
 
     func signUp(email: String, password: String, displayName: String?) async throws {
-        let metadata: [String: JSONValue]? = displayName.map { ["display_name": .string($0)] }
-        let response = try await client.auth.signUp(email: email, password: password, data: metadata)
+        var body: [String: Any] = ["email": email, "password": password]
+        // Better Auth requires a name; the display name is the natural one,
+        // and the email's local part is a better fallback than an empty
+        // string, which it rejects.
+        body["name"] = displayName ?? String(email.prefix(while: { $0 != "@" }))
 
-        guard let session = response.session else {
-            // Email confirmation is required by the project's auth settings;
-            // there's no session yet. Surface that distinctly so the UI can
-            // tell the user to check their inbox instead of showing a
-            // generic failure.
-            throw AuthenticationError.emailConfirmationRequired
-        }
-
-        authToken = session.accessToken
-        isAuthenticated = true
-        await fetchUserProfile()
+        let session = try await NeonClient.shared.auth(
+            "sign-up/email", body: body, as: AuthSession.self)
+        try await establish(session)
     }
 
+    /// Native Sign in with Apple: the identity token Apple hands back is
+    /// posted straight to Better Auth, so the app never opens a web view.
+    ///
+    /// Requires the Apple provider to be configured on the Neon project.
+    /// Until it is, Better Auth answers with a provider error, which is
+    /// translated here rather than surfaced as a raw failure.
     func signInWithApple() async throws {
         let coordinator = AppleSignInCoordinator()
         appleSignInCoordinator = coordinator
-        let credential = try await coordinator.performSignIn()
+        defer { appleSignInCoordinator = nil }
 
+        let credential = try await coordinator.performSignIn()
         guard
             let tokenData = credential.identityToken,
-            let idToken = String(data: tokenData, encoding: .utf8)
+            let identityToken = String(data: tokenData, encoding: .utf8)
         else {
             throw AuthenticationError.missingAppleIdentityToken
         }
 
-        let session = try await client.auth.signInWithIdToken(
-            credentials: OpenIDConnectCredentials(provider: .apple, idToken: idToken)
-        )
-        authToken = session.accessToken
-        isAuthenticated = true
+        var idToken: [String: Any] = ["token": identityToken]
+        if let nonce = coordinator.rawNonce { idToken["nonce"] = nonce }
 
-        if let given = credential.fullName?.givenName {
-            let displayName = [given, credential.fullName?.familyName]
-                .compactMap { $0 }
-                .joined(separator: " ")
-            try? await setDisplayNameIfMissing(displayName, userId: session.user.id)
+        var body: [String: Any] = ["provider": "apple", "idToken": idToken]
+        // Apple sends the name only on the very first authorization, so it
+        // has to be captured then or it is gone for good.
+        if let name = credential.fullName,
+           let formatted = PersonNameComponentsFormatter().string(for: name).nilIfBlank {
+            body["name"] = formatted
         }
 
-        await fetchUserProfile()
+        do {
+            let session = try await NeonClient.shared.auth(
+                "sign-in/social", body: body, as: AuthSession.self)
+            try await establish(session)
+        } catch let error as NeonError {
+            if case let .auth(_, code, _) = error,
+               code == "PROVIDER_NOT_FOUND" || code == "INVALID_PROVIDER" {
+                throw AuthenticationError.appleSignInNotConfigured
+            }
+            throw error
+        }
     }
 
     func signOut() {
-        let currentClient = client
-        Task { try? await currentClient.auth.signOut() }
-        authToken = nil
-        currentUser = nil
-        isAuthenticated = false
-        hasCompletedOnboarding = false
+        Task {
+            await NeonClient.shared.signOut()
+            isAuthenticated = false
+            authToken = nil
+            currentUser = nil
+            hasCompletedOnboarding = false
+        }
     }
 
-    func completeOnboarding(tasteProfile: UserTasteProfile) async {
-        guard let userId = try? await client.auth.session.user.id else { return }
+    private func establish(_ session: AuthSession) async throws {
+        await NeonClient.shared.store(sessionToken: session.token)
+        authToken = try await NeonClient.shared.jwt()
+        isAuthenticated = true
+        await afterSignIn()
+    }
 
-        struct Update: Encodable {
-            let favorite_composers: [String]
-            let favorite_choreographers: [String]
-            let favorite_eras: [String]
-            let favorite_houses: [String]
-            let has_completed_onboarding: Bool
-        }
-        let update = Update(
-            favorite_composers: tasteProfile.composers,
-            favorite_choreographers: tasteProfile.choreographers,
-            favorite_eras: tasteProfile.eras,
-            favorite_houses: tasteProfile.houses,
-            has_completed_onboarding: true
-        )
-
+    /// Creates the profile and the two default lists if they are missing.
+    ///
+    /// On Supabase a trigger on auth.users did this at signup.
+    /// neon_auth."user" is platform-managed and will not take a trigger, so
+    /// the database exposes an idempotent function instead and both clients
+    /// call it. Calling it on every sign-in is intended: it costs one request
+    /// and it self-heals an account whose bootstrap failed first time.
+    private func afterSignIn() async {
         do {
-            try await client.from("profiles").update(update).eq("id", value: userId).execute()
-            currentUser?.favoriteComposers = tasteProfile.composers
-            currentUser?.favoriteChoreographers = tasteProfile.choreographers
-            currentUser?.favoriteEras = tasteProfile.eras
-            currentUser?.favoriteHouses = tasteProfile.houses
-            hasCompletedOnboarding = true
+            try await NeonClient.shared.rpc("ensure_user_bootstrap")
         } catch {
-            print("⚠️ Failed to save taste profile: \(error)")
+            // Not fatal on its own -- the profile may simply already exist.
+            // fetchUserProfile below is what decides whether we are usable.
         }
+        await fetchUserProfile()
     }
 
-    private func setDisplayNameIfMissing(_ displayName: String, userId: UUID) async throws {
-        guard !displayName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        struct Update: Encodable { let display_name: String }
-        try await client
-            .from("profiles")
-            .update(Update(display_name: displayName))
-            .eq("id", value: userId)
-            .is("display_name", value: nil)
-            .execute()
-    }
+    // MARK: Profile
 
     private func fetchUserProfile() async {
         do {
-            let session = try await client.auth.session
-            let userId = session.user.id
-
-            let row: ProfileRow = try await client
-                .from("profiles")
-                .select()
-                .eq("id", value: userId)
-                .single()
-                .execute()
-                .value
-
-            let stats: ProfileStatsRow? = try? await client
-                .from("profile_stats")
-                .select()
-                .eq("user_id", value: userId)
-                .single()
-                .execute()
-                .value
-
-            currentUser = row.asUser(
-                totalExperienced: stats?.total_experienced ?? 0,
-                totalWishlist: stats?.total_wishlist ?? 0
-            )
-            hasCompletedOnboarding = row.has_completed_onboarding
+            // RLS scopes this to the caller, so no user id is needed in the
+            // query: "the profile I am allowed to see" is the right one.
+            let rows = try await NeonClient.shared.get(
+                "profiles", query: "select=*&limit=1", as: [ProfileRow].self)
+            guard let row = rows.first else {
+                currentUser = nil
+                return
+            }
+            let (experienced, wishlist) = await counts()
+            currentUser = row.asUser(totalExperienced: experienced, totalWishlist: wishlist)
+            hasCompletedOnboarding = row.hasCompletedOnboarding
         } catch {
-            print("⚠️ Failed to fetch profile: \(error)")
+            currentUser = nil
+        }
+    }
+
+    /// Two exact counts, asked for with Prefer: count=exact and no rows, so
+    /// the totals do not depend on downloading every row to count it.
+    private func counts() async -> (Int, Int) {
+        async let logs = try? NeonClient.shared.count("attendance_logs")
+        async let wishes = try? NeonClient.shared.count(
+            "list_items",
+            select: "id,user_lists!inner(type)",
+            filter: "user_lists.type=eq.wants_to_experience")
+        return (await logs ?? 0, await wishes ?? 0)
+    }
+
+    func completeOnboarding(tasteProfile: UserTasteProfile) async {
+        struct Patch: Encodable {
+            let favoriteComposers: [String]
+            let favoriteEras: [String]
+            let favoriteHouses: [String]
+            let primaryHouse: String?
+            let hasCompletedOnboarding: Bool
+        }
+        do {
+            _ = try await NeonClient.shared.patch(
+                "profiles",
+                query: "select=*",
+                body: Patch(
+                    favoriteComposers: tasteProfile.favoriteComposers,
+                    favoriteEras: tasteProfile.favoriteEras,
+                    favoriteHouses: tasteProfile.favoriteHouses,
+                    primaryHouse: tasteProfile.primaryHouse,
+                    hasCompletedOnboarding: true),
+                as: [ProfileRow].self)
+            hasCompletedOnboarding = true
+            await fetchUserProfile()
+        } catch {
+            // Left false, so onboarding is offered again rather than being
+            // silently skipped with nothing saved.
         }
     }
 
     func updateUserProfile(_ user: User) async throws {
-        guard let userId = UUID(uuidString: user.id) else { throw AuthenticationError.notAuthenticated }
-
-        struct Update: Encodable {
-            let display_name: String?
+        struct Patch: Encodable {
+            let displayName: String?
             let bio: String?
-            let is_profile_public: Bool
-            let show_stats: Bool
-            let show_lists: Bool
+            let isProfilePublic: Bool
+            let showStats: Bool
+            let showLists: Bool
+            let favoriteComposers: [String]
+            let favoriteChoreographers: [String]
+            let favoriteEras: [String]
+            let favoriteHouses: [String]
+            let primaryHouse: String?
         }
-        let update = Update(
-            display_name: user.displayName,
-            bio: user.bio,
-            is_profile_public: user.isProfilePublic,
-            show_stats: user.showStats,
-            show_lists: user.showLists
-        )
-
-        try await client.from("profiles").update(update).eq("id", value: userId).execute()
-        currentUser = user
+        _ = try await NeonClient.shared.patch(
+            "profiles",
+            query: "select=*",
+            body: Patch(
+                displayName: user.displayName,
+                bio: user.bio,
+                isProfilePublic: user.isProfilePublic,
+                showStats: user.showStats,
+                showLists: user.showLists,
+                favoriteComposers: user.favoriteComposers,
+                favoriteChoreographers: user.favoriteChoreographers,
+                favoriteEras: user.favoriteEras,
+                favoriteHouses: user.favoriteHouses,
+                primaryHouse: user.primaryHouse),
+            as: [ProfileRow].self)
+        await fetchUserProfile()
     }
 
     func deleteAccount() async throws {
-        // Deleting the auth.users row (which cascades to every table that
-        // references it) requires the service-role key and can't run from
-        // the client. Deploy the `delete-account` Supabase Edge Function
-        // described in SUPABASE_SETUP.md, then call it here.
-        _ = try await client.functions.invoke("delete-account")
-        signOut()
+        // Better Auth owns the user record; the app's own rows go with it
+        // through `on delete cascade` on the foreign keys into
+        // neon_auth."user".
+        _ = try await NeonClient.shared.auth(
+            "delete-user", body: [:], as: EmptyResponse.self)
+        await NeonClient.shared.signOut()
+        isAuthenticated = false
+        authToken = nil
+        currentUser = nil
     }
 }
 
-// MARK: - Sign in with Apple
+private extension String {
+    var nilIfBlank: String? {
+        trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
+    }
+}
 
-private class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate,
-    ASAuthorizationControllerPresentationContextProviding {
+// MARK: - Apple Sign In
+
+private final class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate,
+                                            ASAuthorizationControllerPresentationContextProviding {
     private var continuation: CheckedContinuation<ASAuthorizationAppleIDCredential, Error>?
+    /// Kept so it can be sent to the server, which must compare it against
+    /// the hash inside the identity token. Without that check an intercepted
+    /// token could be replayed.
+    private(set) var rawNonce: String?
 
     func performSignIn() async throws -> ASAuthorizationAppleIDCredential {
-        try await withCheckedThrowingContinuation { continuation in
+        let nonce = Self.randomNonce()
+        rawNonce = nonce
+
+        let request = ASAuthorizationAppleIDProvider().createRequest()
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = Self.sha256(nonce)
+
+        return try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
-
-            let provider = ASAuthorizationAppleIDProvider()
-            let request = provider.createRequest()
-            request.requestedScopes = [.fullName, .email]
-
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = self
             controller.presentationContextProvider = self
@@ -294,23 +369,44 @@ private class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegat
         }
     }
 
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
-        if let credential = authorization.credential as? ASAuthorizationAppleIDCredential {
-            continuation?.resume(returning: credential)
-        } else {
+    func authorizationController(controller: ASAuthorizationController,
+                                 didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
             continuation?.resume(throwing: AuthenticationError.missingAppleIdentityToken)
+            continuation = nil
+            return
         }
+        continuation?.resume(returning: credential)
         continuation = nil
     }
 
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+    func authorizationController(controller: ASAuthorizationController,
+                                 didCompleteWithError error: Error) {
         continuation?.resume(throwing: error)
         continuation = nil
     }
 
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
-            .first ?? ASPresentationAnchor()
+        // The key window of the active foreground scene. UIApplication.windows
+        // is deprecated and returns the wrong window under multiple scenes.
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        return scene?.keyWindow ?? ASPresentationAnchor()
+    }
+
+    private static func randomNonce(length: Int = 32) -> String {
+        var bytes = [UInt8](repeating: 0, count: length)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func sha256(_ input: String) -> String {
+        SHA256.hash(data: Data(input.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 }
