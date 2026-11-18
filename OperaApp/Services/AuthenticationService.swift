@@ -268,9 +268,9 @@ final class AuthenticationService: NSObject, ObservableObject {
     func completeOnboarding(tasteProfile: UserTasteProfile) async {
         struct Patch: Encodable {
             let favoriteComposers: [String]
+            let favoriteChoreographers: [String]
             let favoriteEras: [String]
             let favoriteHouses: [String]
-            let primaryHouse: String?
             let hasCompletedOnboarding: Bool
         }
         do {
@@ -278,10 +278,10 @@ final class AuthenticationService: NSObject, ObservableObject {
                 "profiles",
                 query: "select=*",
                 body: Patch(
-                    favoriteComposers: tasteProfile.favoriteComposers,
-                    favoriteEras: tasteProfile.favoriteEras,
-                    favoriteHouses: tasteProfile.favoriteHouses,
-                    primaryHouse: tasteProfile.primaryHouse,
+                    favoriteComposers: tasteProfile.composers,
+                    favoriteChoreographers: tasteProfile.choreographers,
+                    favoriteEras: tasteProfile.eras,
+                    favoriteHouses: tasteProfile.houses,
                     hasCompletedOnboarding: true),
                 as: [ProfileRow].self)
             hasCompletedOnboarding = true
