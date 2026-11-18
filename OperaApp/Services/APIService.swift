@@ -220,18 +220,18 @@ class APIService {
         async let byTitle = try? neon.get(
             "opera_works",
             query: "select=\(Self.workSelect)&status=eq.published&title=\(pattern)&limit=25",
-            as: [WorkRow].self)
+            as: [WorkRow].self, authenticated: false)
 
         async let byTranslation = try? neon.get(
             "opera_titles",
             query: "select=title,language,opera_works(\(Self.workSelect))&title=\(pattern)&limit=25",
-            as: [TitleRow].self)
+            as: [TitleRow].self, authenticated: false)
 
         async let byComposer = try? neon.get(
             "opera_works",
             query: "select=\(Self.workSelect)&status=eq.published" +
                    "&opera_composers.name=\(pattern)&limit=25",
-            as: [WorkRow].self)
+            as: [WorkRow].self, authenticated: false)
 
         var seen = Set<UUID>()
         var operas: [Opera] = []
@@ -247,7 +247,7 @@ class APIService {
         let rows = try await neon.get(
             "opera_works",
             query: "select=\(Self.workSelect)&id=eq.\(id)&limit=1",
-            as: [WorkRow].self)
+            as: [WorkRow].self, authenticated: false)
         guard let row = rows.first else {
             throw NeonError.api(status: 404, code: nil, message: "No opera with id \(id)")
         }
@@ -262,7 +262,7 @@ class APIService {
             "opera_works",
             query: "select=\(Self.workSelect)&status=eq.published" +
                    "&premiere_year=not.is.null&order=premiere_year.desc&limit=\(limit)",
-            as: [WorkRow].self)
+            as: [WorkRow].self, authenticated: false)
         return rows.map { $0.asOpera() }
     }
 

@@ -135,6 +135,8 @@ actor NeonClient {
     private let session: URLSession
     private var cachedJWT: String?
     private var jwtExpiry: Date?
+    private var cachedAnonymousJWT: String?
+    private var anonymousExpiry: Date?
     /// In-flight refresh, so concurrent callers await one request.
     private var refreshTask: Task<String, Error>?
 
@@ -238,6 +240,39 @@ actor NeonClient {
             let exp = json["exp"] as? TimeInterval
         else { return Date().addingTimeInterval(300) }
         return Date(timeIntervalSince1970: exp)
+    }
+
+    /// The token a signed-out request carries.
+    ///
+    /// Neon's Data API never accepts a request with no token at all -- unlike
+    /// Supabase, where the anon key did that job. A visitor who has not
+    /// signed in fetches a short-lived token whose role claim is `anonymous`,
+    /// and the database decides what that role may read. Sending nothing is
+    /// a 401 whatever the Data API's settings say, which is how the first
+    /// version of this client failed.
+    private func anonymousJWT() async throws -> String {
+        if let token = cachedAnonymousJWT, let expiry = anonymousExpiry,
+           expiry.timeIntervalSinceNow > 60 {
+            return token
+        }
+        var request = URLRequest(
+            url: AppConfig.authURL.appendingPathComponent("token/anonymous"))
+        request.httpMethod = "GET"
+        request.setValue(AppConfig.authOrigin, forHTTPHeaderField: "Origin")
+
+        struct TokenResponse: Decodable { let token: String }
+        let token = try await send(request, decodeAuth: TokenResponse.self).token
+        cachedAnonymousJWT = token
+        anonymousExpiry = Self.expiry(of: token)
+        return token
+    }
+
+    /// The signed-in user's token when there is one, an anonymous one when
+    /// there is not. For reads that are public either way -- the catalogue,
+    /// the houses, the playbill.
+    private func bearer() async throws -> String {
+        if SessionStore.load() != nil, let token = try? await jwt() { return token }
+        return try await anonymousJWT()
     }
 
     func signOut() {
@@ -359,9 +394,11 @@ actor NeonClient {
         var request = URLRequest(url: components.url!)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if authenticated {
-            request.setValue("Bearer \(try await jwt())", forHTTPHeaderField: "Authorization")
-        }
+        // Every request carries a token. `authenticated` means "this must be
+        // the signed-in user", and fails with notSignedIn when it is not;
+        // otherwise an anonymous token stands in.
+        let token = try await (authenticated ? jwt() : bearer())
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         return request
     }
 

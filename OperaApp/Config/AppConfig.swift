@@ -22,12 +22,14 @@ enum AppConfig {
     static let authURL: URL = required("NEON_AUTH_URL", looksUnset: "YOUR-")
 
     /// Sent as the Origin on auth calls. Better Auth checks it against the
-    /// project's trusted origins, so this value has to be registered in the
-    /// Neon console or every sign-in fails with INVALID_ORIGIN.
+    /// project's trusted origins and refuses anything else with
+    /// INVALID_ORIGIN. It has to be an http(s) origin -- Neon rejects a
+    /// custom scheme such as operaapp:// outright -- so the app presents the
+    /// product's own web origin, which is already trusted for the web app.
     static let authOrigin: String =
         (Bundle.main.object(forInfoDictionaryKey: "NEON_AUTH_ORIGIN") as? String)
             .flatMap { $0.isEmpty ? nil : $0 }
-        ?? "operaapp://auth"
+        ?? "https://itolmach.github.io"
 
     private static func required(_ key: String, looksUnset placeholder: String) -> URL {
         guard
@@ -41,8 +43,8 @@ enum AppConfig {
             // names the problem instead of surfacing it later as a pile of
             // unexplained network errors.
             fatalError(
-                "\(key) is not configured. Copy OperaApp/Config/Config.xcconfig.example to " +
-                "OperaApp/Config/Config.xcconfig and fill it in. See NEON_SETUP.md."
+                "\(key) is missing or cut short in OperaApp/Config/Config.xcconfig. " +
+                "See NEON_SETUP.md."
             )
         }
         return url

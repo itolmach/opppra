@@ -1,5 +1,10 @@
 # Current state — Opera project
 
+> **Out of date since November 2026.** This describes the Supabase backend and
+> the web app. The backend is now Neon (`NEON_SETUP.md`) and the product is
+> the iOS app only (`README.md`). Kept for the history of the contract; the
+> rules about the shared `opera_id` and row level security still hold.
+
 Two apps, one Supabase project, one account and one dataset across both.
 
 ## Where things live

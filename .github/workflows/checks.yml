@@ -1,0 +1,68 @@
+# Fast checks, on every push. The Swift is compiled by ios-build.yml, which
+# needs a macOS runner and so only runs when the app itself changes.
+name: Checks
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repo:
+    name: Config and migrations
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Property lists parse
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          for path in ("OperaApp/Info.plist",
+                       "OperaApp/Config/OperaApp.entitlements",
+                       "OperaApp/Config/ExportOptions.plist"):
+              with open(path, "rb") as f:
+                  plistlib.load(f)
+              print("ok", path)
+          PY
+
+      - name: Config URLs are whole
+        # xcconfig cuts a value off at "//". A URL written plainly becomes
+        # "https:" with no error anywhere, and every request then fails.
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          bad = []
+          for line in open("OperaApp/Config/Config.xcconfig", encoding="utf-8"):
+              line = line.strip()
+              if not line or line.startswith("//"):
+                  continue
+              name, _, value = (part.strip() for part in line.partition("="))
+              if "//" in value:
+                  bad.append(f"{name}: '//' in the value starts a comment; write https:/$()/")
+              elif not re.fullmatch(r"https:/\$\(\)/[A-Za-z0-9.-]+(/[A-Za-z0-9./_-]*)?", value):
+                  bad.append(f"{name}: not an https address: {value}")
+              elif "YOUR-" in value:
+                  bad.append(f"{name}: still the placeholder")
+          print("\n".join(bad) or "ok")
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: Neon migrations match their Supabase sources
+        # neon/migrations/0001, 0003 and 0004 are generated. A hand edit, or a
+        # Supabase migration changed without re-running the script, shows here.
+        run: |
+          python3 scripts/port-to-neon.py
+          git diff --exit-code -- neon/migrations
+
+      - name: No Supabase client left in the app
+        run: |
+          if grep -rnE "^import Supabase|SupabaseManager\.shared|\.supabase\.co" OperaApp --include='*.swift'; then
+            echo "::error::The app talks to Neon; these lines still reach for Supabase."
+            exit 1
+          fi

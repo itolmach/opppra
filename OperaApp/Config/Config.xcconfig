@@ -1,0 +1,19 @@
+// The app's whole configuration. Committed on purpose: none of this is a
+// secret. Neon's Data API takes no API key -- a signed-out request carries a
+// short-lived anonymous token, a signed-in one the user's token, and the
+// authorization boundary is row level security in the database. These are
+// the same public addresses that ship inside the app.
+//
+// xcconfig treats // as a comment everywhere, including inside a value, so
+// the $() below splits the "//" in https:// and is load-bearing. Without it
+// each URL is silently cut off at "https:". The Checks workflow guards this.
+
+NEON_DATA_API_URL = https:/$()/ep-winter-meadow-bcl0qyhn.apirest.c-16.us-east-1.aws.neon.tech/opera/rest/v1
+NEON_AUTH_URL = https:/$()/ep-winter-meadow-bcl0qyhn.neonauth.c-16.us-east-1.aws.neon.tech/opera/auth
+
+// Sent as the Origin header on every auth call. Better Auth checks it
+// against the project's trusted origins and refuses anything else with
+// INVALID_ORIGIN. It must be an http(s) origin (Neon rejects a custom scheme
+// such as operaapp:// outright) and it must be on the project's trusted
+// domains list. It is only a registered name: no page has to exist there.
+NEON_AUTH_ORIGIN = https:/$()/itolmach.github.io

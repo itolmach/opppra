@@ -13,58 +13,73 @@ not build.)
 | Data API | `https://ep-winter-meadow-bcl0qyhn.apirest.c-16.us-east-1.aws.neon.tech/opera/rest/v1` |
 | Auth | `https://ep-winter-meadow-bcl0qyhn.neonauth.c-16.us-east-1.aws.neon.tech/opera/auth` |
 
-## 1. Config.xcconfig
+## 1. Configuration
 
-```bash
-cp OperaApp/Config/Config.xcconfig.example OperaApp/Config/Config.xcconfig
-```
-
-Fill in the two URLs above. It is gitignored.
+`OperaApp/Config/Config.xcconfig` holds the three addresses the app needs and
+is committed. None of them is a secret: they are the same public endpoints
+that ship inside the app, and the Data API takes no API key.
 
 One trap: xcconfig treats `//` as a comment **anywhere in the line**, including
-inside a URL. The example splits it as `https:/$()/` for that reason. Remove
-that and the value silently becomes `https:`, and every request fails with
-something that looks nothing like a config error.
+inside a URL. The file writes `https:/$()/` for that reason. Remove that and
+the value silently becomes `https:`, and every request fails with something
+that looks nothing like a config error. The Checks workflow guards it.
 
-## 2. Two settings in the Neon console
+## 2. How a signed-out request works
 
-Neither can be set from the app, and the app does not work without them.
+Neon's Data API never accepts a request with no token. A visitor who has not
+signed in fetches a short-lived token from `GET {auth}/token/anonymous`
+(role `anonymous`, an hour) and sends it as `Authorization: Bearer`; what
+that role may read is decided by grants and row level security. `NeonClient`
+does this and caches the token. Sending nothing is a 401 whatever the Data
+API's settings say.
 
-**Trusted origin.** Auth → trusted domains → add `operaapp://auth` (the value
-of `NEON_AUTH_ORIGIN`). Better Auth checks the `Origin` header on every call
-and refuses an unknown one with `INVALID_ORIGIN`. Only `localhost` is trusted
-by default.
+Checked against the live project with an anonymous token: the catalogue,
+houses and playbill read; private tables return no rows; every write and the
+bootstrap function are refused with 403.
 
-**Anonymous role.** Data API settings → anonymous role → `anonymous`. Without
-it the Data API rejects *every* unauthenticated request with 401, so the
-catalogue cannot be browsed before signing in. The `anonymous` Postgres role
-already exists and already has the right grants; the Data API just has to be
-told to use it.
+## 3. The Origin header
 
-## 3. Sign in with Apple
+Better Auth checks the `Origin` header on every auth call and refuses an
+unknown one with `INVALID_ORIGIN`. Neon only accepts http(s) origins on its
+trusted list, so a custom scheme such as `operaapp://` cannot be used. The
+app sends `https://itolmach.github.io`, which is on the list. It is only a
+registered name; nothing has to be served there.
 
-Two halves, and the Neon half is not done yet.
+Checked: sign-up and the token exchange succeed with that origin, and an
+unlisted origin is refused with 403.
 
-- **Xcode:** select the target → Signing & Capabilities → **+ Capability** →
-  Sign in with Apple. There is no `.entitlements` file in the project yet;
-  adding the capability creates one.
-- **Neon:** Auth → OAuth providers → add Apple, with the Service ID, Team ID,
-  Key ID and `.p8` key from your Apple Developer account. Until this exists
-  the button is wired and will fail cleanly with "Sign in with Apple is not
-  set up for this project yet" rather than a raw provider error.
+## 4. Sign in with Apple
+
+The app side is done: the entitlement is in
+`OperaApp/Config/OperaApp.entitlements` and the button sends Apple's identity
+token to `sign-in/social`. The Neon side is not: the Apple provider has to be
+added to the project (Neon console -> Auth -> OAuth providers) with a Services
+ID, the Team ID, a Key ID and the `.p8` key from the Apple Developer account.
+Those are secrets, so they are typed into Neon's console by the account
+holder and never pass through a chat or this repo. Until then the button
+fails cleanly with "Sign in with Apple is not set up for this project yet".
+
+Open question, to settle on the first real attempt: a native sign-in's token
+names the app's bundle id as its audience, while Neon's form asks for a
+Services ID. If the token is refused for its audience, the bundle id is the
+value to try as the client id.
 
 Email and password sign-in works without any of this.
 
-## 4. Signing
+## 5. Building and shipping
 
-`DEVELOPMENT_TEAM` is already set to `ZFBA888K4E` and the bundle id is
-`com.operaapp.OperaApp`. Deployment target is iOS 16.
+Nothing here needs a Mac. `ios-build.yml` compiles the app for the simulator
+on every push that touches it. `testflight.yml`, started by hand, archives,
+signs with Apple's cloud-managed signing and uploads to TestFlight; the three
+secrets it needs are listed at the top of that file. It has not been run yet.
+
+`DEVELOPMENT_TEAM` is `ZFBA888K4E`, the bundle id is `com.operaapp.OperaApp`,
+and the deployment target is iOS 16.
 
 ## What works, and what does not
 
-Verified by calling the live Data API directly with a real account — not from
-the app, which has never been compiled (there is no Xcode in the environment
-this was written in):
+Verified by calling the live Data API directly with a real account, not from
+the app on a device:
 
 - Catalogue search by title, by translated title (Russian included) and by
   composer

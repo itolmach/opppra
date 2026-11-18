@@ -1,0 +1,51 @@
+# Compiles the app. Nobody on this project works at a Mac day to day, so this
+# run is the only place the Swift is ever built: a red run here means the app
+# does not compile, whatever the diff looked like.
+name: iOS build
+
+on:
+  push:
+    paths:
+      - "OperaApp/**"
+      - "OperaApp.xcodeproj/**"
+      - ".github/workflows/ios-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build for the iOS simulator
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OperaApp.xcodeproj \
+            -scheme OperaApp \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/build.log" | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" "$RUNNER_TEMP/build.log"
+
+      - name: What failed
+        if: failure()
+        run: |
+          echo "---- distinct errors ----"
+          grep -E "error:" "$RUNNER_TEMP/build.log" | sed -E "s#^$GITHUB_WORKSPACE/##" | sort -u | head -150
+          echo "---- end of log ----"
+          tail -25 "$RUNNER_TEMP/build.log"
