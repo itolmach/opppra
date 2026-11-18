@@ -24,7 +24,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Xcode version
         run: xcodebuild -version
@@ -45,7 +45,9 @@ jobs:
       - name: What failed
         if: failure()
         run: |
+          # Only the errors, each once. The raw log ends in compiler command
+          # lines thousands of characters long, which bury them.
           echo "---- distinct errors ----"
           grep -E "error:" "$RUNNER_TEMP/build.log" | sed -E "s#^$GITHUB_WORKSPACE/##" | sort -u | head -150
-          echo "---- end of log ----"
-          tail -25 "$RUNNER_TEMP/build.log"
+          echo "---- which steps failed ----"
+          sed -n '/The following build commands failed/,$p' "$RUNNER_TEMP/build.log" | cut -c1-160

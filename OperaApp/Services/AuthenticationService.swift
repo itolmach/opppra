@@ -183,7 +183,7 @@ final class AuthenticationService: NSObject, ObservableObject {
         // Apple sends the name only on the very first authorization, so it
         // has to be captured then or it is gone for good.
         if let name = credential.fullName,
-           let formatted = PersonNameComponentsFormatter().string(for: name).nilIfBlank {
+           let formatted = PersonNameComponentsFormatter().string(for: name)?.nilIfBlank {
             body["name"] = formatted
         }
 
